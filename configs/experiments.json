@@ -1,0 +1,12 @@
+[
+    {
+        "dino": {
+            "backbone": "small"
+        },
+        "datasets": ["hc18", "abdominal", "planesdb", "psfh", "planesafrica"],
+        "epochs": 70,
+        "batch_size": 16, 
+        "lr": 1e-4,
+        "weight_decay": 1e-4
+    }
+]

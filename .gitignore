@@ -166,7 +166,6 @@ cython_debug/
 
 # directories
 data_csv/
-configs/
 outputs/
 test/
 
