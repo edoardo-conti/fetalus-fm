@@ -168,6 +168,7 @@ cython_debug/
 data_csv/
 configs/
 outputs/
+test/
 
 # notebooks
 *.ipynb

@@ -19,8 +19,8 @@ class UnifiedFetalDataset(VisionDataset):
         datasets: List[str],
         split: str = 'train',
         supervised: bool = True,
-        target_size: Tuple[int, int] = (640, 640),
-        augmentation: callable = None,
+        target_size: Tuple[int, int] = (644, 644),
+        augmentations: Tuple[callable, callable] = None,
         transform: callable = None
     ):
         """
@@ -44,7 +44,8 @@ class UnifiedFetalDataset(VisionDataset):
         self.target_size = target_size
         self.split = split
         self.supervised = supervised
-        self.augmentation = augmentation
+        self.geometric_augs = augmentations[0] if augmentations else None
+        self.color_augs = augmentations[1] if augmentations else None
         self.class_values = list(range(1, len(FUS_STRUCTURES)))
         self.samples = []
         self.dataframes = []
@@ -78,29 +79,32 @@ class UnifiedFetalDataset(VisionDataset):
 
         # Load image and mask
         image, mask = getattr(self, f'_load_{ds_name}')(row, cfg)
-        
-        # Common image processing
+        # print(f'_load_{ds_name}') # debugging
+        # Common image and mask resizing
         image = cv2.resize(image, self.target_size)
+        mask = cv2.resize(mask, self.target_size, interpolation=cv2.INTER_NEAREST)
         
         # Data augmentation
-        if self.split == 'train' and self.augmentation:
+        if self.split == 'train' and (self.geometric_augs and self.color_augs):
             if self.supervised:
-                augmented = self.augmentation(image=image, mask=mask)
+                # trasformazioni geometriche sincronizzate
+                augmented = self.geometric_augs(image=image, mask=mask)
                 image, mask = augmented['image'], augmented['mask']
+                
+                # trasformazioni di colore solo all'immagine
+                image = self.color_augs(image=image)['image']
             else:
-                image = self.augmentation(image=image)['image']
+                image = self.geometric_augs(image=image)['image']
+                image = self.color_augs(image=image)['image']
         
-        # To C, H, W.
+        # image processing
         image = image.transpose(2, 0, 1)
-
-        # Convert image to tensor
         image = torch.tensor(image).float() / 255.0 
         
         if not self.supervised:
             return image
-            
-        # Supervised-only processing for mask
-        mask = cv2.resize(mask, self.target_size, interpolation=cv2.INTER_NEAREST)
+        
+        # Supervised-only mask processing
         encoded_mask = self.label_mask(mask, ds_name, self.class_values)
         encoded_mask = torch.tensor(encoded_mask).long()
         

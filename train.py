@@ -9,9 +9,9 @@ import torch.nn as nn
 from datetime import datetime
 from torchinfo import summary
 from torch.utils.data import DataLoader
-from augmentations import train_transforms, val_transforms
+from augmentations import geometric_transforms, color_transforms
 from datasets.unified import UnifiedFetalDataset
-from foundation_models.dinov2 import Dinov2Segmentation
+from foundation.model import Dinov2Segmentation
 from utils import IMAGE_SIZE, SEED, FUS_STRUCTURES, FUS_STRUCTURES_COLORS, SaveBestModel, SaveBestModelIOU, save_model, save_plots
 from engine import train, validate
 
@@ -31,29 +31,36 @@ if torch.backends.mps.is_available():
     torch.backends.mps.deterministic = True
     torch.backends.mps.benchmark = True
 
-
 parser = argparse.ArgumentParser()
-parser.add_argument("--root", type=str, help="root of the project")
+parser.add_argument("--root", type=str, required=True, help="root of the project")
 parser.add_argument("--datasets", type=str, required=True, help="path to the datasets")
-parser.add_argument("--exp-id", type=int, required=True, help="index of experiment to run from config")
+parser.add_argument("--exp-id", type=int, help="index of experiment to run from config")
 parser.add_argument('--fine-tune', dest='fine_tune', action='store_true', help='whether to fine tune the backbone or not')
+parser.add_argument('--debug', action='store_true', help='debug mode, reduces dataset size for faster testing')
 args = parser.parse_args()
 
 # print(f"Arguments: {args}")
 
-
 if __name__ == '__main__':
     
     # Load experiment config
-    with open('configs/experiments.json') as f:
+    with open(os.path.join(args.root, 'configs/experiments.json')) as f:
         experiments = json.load(f)
-    config = experiments[args.exp_id]
+    
+    # Handle exp-id argument robustly: make it optional and check validity
+    if args.exp_id is not None:
+        if args.exp_id < 0 or args.exp_id >= len(experiments):
+            raise ValueError(f"exp-id {args.exp_id} is out of range (0-{len(experiments)-1})")
+        config = experiments[args.exp_id]
+    else:
+        # If exp-id is not provided, use the first experiment as default
+        config = experiments[0]
     
     # Create output directory
-    # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    timestamp = datetime.now().strftime("%Y%m%d")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    #timestamp = datetime.now().strftime("%Y%m%d")
     exp_name = config['datasets'][0] if len(config['datasets']) == 1 else ''.join([d[0].lower() for d in config['datasets']])
-    out_dir = os.path.join('outputs', f"{exp_name}_{timestamp}")
+    out_dir = os.path.join(args.root, 'outputs', f"{exp_name}_{timestamp}")
     if os.path.exists(out_dir):
         shutil.rmtree(out_dir)
     
@@ -72,8 +79,8 @@ if __name__ == '__main__':
     # ================================================================================== 
     # ==================================== DATASET =====================================
     # ================================================================================== 
-    train_tfms = train_transforms(img_size=IMAGE_SIZE)
-    val_tfms = val_transforms(img_size=IMAGE_SIZE)
+    train_geo_tfms = geometric_transforms(image_size=IMAGE_SIZE)
+    train_color_tfms = color_transforms()
     
     fus_train = UnifiedFetalDataset(
         root=args.root,
@@ -82,7 +89,7 @@ if __name__ == '__main__':
         split='train',
         supervised=True,
         target_size=IMAGE_SIZE,
-        augmentation=train_tfms
+        augmentations=(train_geo_tfms, train_color_tfms),
     )
     fus_val = UnifiedFetalDataset(
         root=args.root,
@@ -91,7 +98,6 @@ if __name__ == '__main__':
         split='val',
         supervised=True,
         target_size=IMAGE_SIZE,
-        augmentation=val_tfms
     )
     fus_test = UnifiedFetalDataset(
         root=args.root,
@@ -100,16 +106,19 @@ if __name__ == '__main__':
         split='test',
         supervised=True,
         target_size=IMAGE_SIZE,
-        augmentation=val_tfms
     )
-
+    
     # DataLoaders
-    # train_loader = DataLoader(fus_train, batch_size=config['batch_size'], shuffle=True)
-    # val_loader = DataLoader(fus_val, batch_size=config['batch_size'], shuffle=True)
-    # test_loader = DataLoader(fus_test, batch_size=config['batch_size'], shuffle=False)
-    train_loader = DataLoader(fus_train, batch_size=config['batch_size'], sampler=torch.utils.data.SubsetRandomSampler(range(0, len(fus_train), 100)))
-    val_loader = DataLoader(fus_val, batch_size=config['batch_size'], sampler=torch.utils.data.SubsetRandomSampler(range(0, len(fus_val), 20)))
-    test_loader = DataLoader(fus_test, batch_size=config['batch_size'], sampler=torch.utils.data.SubsetRandomSampler(range(0, len(fus_test), 40)))
+    if args.debug:
+        # Reduce dataset size for debugging
+        fus_train = torch.utils.data.Subset(fus_train, range(min(2, len(fus_train))))
+        fus_val = torch.utils.data.Subset(fus_val, range(min(1, len(fus_val))))
+        fus_test = torch.utils.data.Subset(fus_test, range(min(1, len(fus_test))))
+    
+    train_loader = DataLoader(fus_train, batch_size=config['batch_size'], shuffle=True)
+    val_loader = DataLoader(fus_val, batch_size=config['batch_size'], shuffle=True)
+    test_loader = DataLoader(fus_test, batch_size=config['batch_size'], shuffle=False)
+
     print(f"Train dataset size: {len(fus_train)}")
     print(f"Validation dataset size: {len(fus_val)}")
     print(f"Test dataset size: {len(fus_test)}")
@@ -124,12 +133,11 @@ if __name__ == '__main__':
     # ===================================== MODEL ======================================
     # ================================================================================== 
     # Set device based on availability
-    # device = torch.device(
-    #     "cuda" if torch.cuda.is_available() else
-    #     "mps" if torch.backends.mps.is_available() else
-    #     "cpu"
-    # )
-    device = "cpu" # for testing purposes because it doesn't work on MPS
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() else
+        "cpu"
+    )
+    # device = "cpu" # for testing purposes because it doesn't work on MPS
     print(f"Using device: {device}")
 
     dino_backbone = config['dino']['backbone']

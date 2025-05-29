@@ -4,7 +4,7 @@ import numpy as np
 
 # from datasets.fetalhc18 import FetalHC18
 # from datasets.fetalplanesdb import FetalPlanesDB
-from datasets.fetalplanesafrica import FetalPlanesAfrica
+# from datasets.fetalplanesafrica import FetalPlanesAfrica
 # from datasets.fetalabdominal import FetalAbdominal
 # from datasets.fetalpsfh import FetalPSFH
 # from datasets.fetalacouslic import FetalACOUSLIC
@@ -33,7 +33,7 @@ if __name__ == "__main__":
     #     reset_dataset_files(dataset_path=args.dataset)
 
     # transformations
-    transforms = Compose([Resize((224, 224)), ToTensor()])
+    # transforms = Compose([Resize((224, 224)), ToTensor()])
     
     # FetalHC18 (Fetal_HC18_Z1327317)
     # FHC18_train = FetalHC18(
@@ -82,27 +82,27 @@ if __name__ == "__main__":
     # )   
 
     # FetalPlanesAfrica (Fetal_Planes_Africa_Z7540448)
-    FPAfrica_train = FetalPlanesAfrica(
-        root=args.dataset,
-        split="train",
-        val_percentage=0.1,
-        target_transform=np.array,
-        transform=transforms,
-    )
-    FPAfrica_val = FetalPlanesAfrica(
-        root=args.dataset,
-        split="val",
-        val_percentage=0.1,
-        target_transform=np.array,
-        transform=transforms,
-    )
-    FPAfrica_test = FetalPlanesAfrica(
-        root=args.dataset,
-        split="test",
-        val_percentage=0.1,
-        target_transform=np.array,
-        transform=transforms,
-    )   
+    # FPAfrica_train = FetalPlanesAfrica(
+    #     root=args.dataset,
+    #     split="train",
+    #     val_percentage=0.1,
+    #     target_transform=np.array,
+    #     transform=transforms,
+    # )
+    # FPAfrica_val = FetalPlanesAfrica(
+    #     root=args.dataset,
+    #     split="val",
+    #     val_percentage=0.1,
+    #     target_transform=np.array,
+    #     transform=transforms,
+    # )
+    # FPAfrica_test = FetalPlanesAfrica(
+    #     root=args.dataset,
+    #     split="test",
+    #     val_percentage=0.1,
+    #     target_transform=np.array,
+    #     transform=transforms,
+    # )   
     
     # FetalAbdominal (Fetal_Abdominal_MD4GCPM9DSC3)
     # FPAbdominal_train = FetalAbdominal(

@@ -8,3 +8,4 @@ matplotlib
 jupyter
 albumentations
 scikit-learn
+SimpleITK

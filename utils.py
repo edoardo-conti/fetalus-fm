@@ -196,7 +196,7 @@ def draw_translucent_seg_maps(
     alpha = 1 # how much transparency
     beta = 0.8 # alpha + beta should be 1
     gamma = 0 # contrast
-
+    
     seg_map = output[0] # use only one output from the batch
     seg_map = torch.argmax(seg_map.squeeze(), dim=0).detach().cpu().numpy()
 
