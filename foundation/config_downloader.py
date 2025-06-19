@@ -63,7 +63,7 @@ def download_dinov2_config(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Download DINOv2 configuration file.")
-    parser.add_argument("--backbone_size", type=str, default="small", choices=["small", "base", "large", "giant"], help="Backbone size")
+    parser.add_argument("--backbone", type=str, default="small", choices=["small", "base", "large", "giant"], help="Backbone size")
     parser.add_argument("--head_dataset", type=str, default="voc2012", choices=["ade20k", "voc2012"], help="Head dataset")
     parser.add_argument("--head_type", type=str, default="ms", choices=["ms", "linear"], help="Head type")
     parser.add_argument("--output_dir", type=str, default="configs", help="Output directory")
@@ -72,7 +72,7 @@ if __name__ == "__main__":
 
     try:
         output_path = download_dinov2_config(
-            backbone_size=args.backbone_size,
+            backbone_size=args.backbone,
             head_dataset=args.head_dataset,
             head_type=args.head_type,
             output_dir=args.output_dir

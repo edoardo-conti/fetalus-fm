@@ -1,6 +1,5 @@
 from pathlib import Path
 from typing import Literal, Callable, Optional, Tuple, List, Set
-from PIL import Image
 from torchvision.datasets import VisionDataset
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
@@ -10,28 +9,30 @@ import pandas as pd
 import torch
 
 # ================================================================================== 
-# =========================== Fetal_Abdominal_MD4GCPM9DSC3 =============================
+# ==================================== VD_FABD =====================================
 # ================================================================================== 
-class FetalAbdominal(VisionDataset):
+class VD_FABD(VisionDataset):
     def __init__(
         self,
         root: Path,
+        split: Literal['train', 'test', 'val'],
         data_dir: Path = Path("./data_csv"),
-        split: Literal['train', 'test', 'val'] = 'train',
-        val_percentage: Optional[float] = None,
-        test_size: float = 0.3,
+        val_size: Optional[float] = 0.15,
+        test_size: Optional[float] = 0.15,
         transform: Optional[Callable] = None,
         target_transform: Optional[Callable] = None,
         seed: int = 42,
     ):
         """
-        Dataset 'Fetal_Abdominal_MD4GCPM9DSC3' for fetal abdominal structures segmentation.
+        Dataset 'VD_FABD' for fetal abdominal structures segmentation.
         https://data.mendeley.com/datasets/4gcpm9dsc3/1
 
         Args:
             root (str): Root directory of the dataset.
+            split (Literal['train', 'val', 'test']): Dataset split, either 'train', 'val' or 'test'.
             data_dir (str): Directory where the processed dataset csv files will be stored.
-            split (Literal['train', 'test']): Dataset split, either 'train' or 'test'.
+            val_size (Optional[float]): Proportion of the training set to use for validation.
+            test_size (Optional[float]): Proportion of the dataset to use for testing.
             target (Optional[Callable]): A function/transform that takes in the image and transforms it.
             target_transform (Optional[Callable]): A function/transform that takes in the target and transforms it.
             seed (int): Random seed for reproducibility.
@@ -42,36 +43,38 @@ class FetalAbdominal(VisionDataset):
             raise ValueError("split must be one of ['train', 'val', 'test']")
         
         self.root = Path(root)
-        self.data_dir = data_dir / self.root.name
-        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.data_dir = Path(data_dir) / self.root.name
         self.split = split
-        self.val_percentage = val_percentage
+        self.val_size = val_size
         self.test_size = test_size
         self.transform = transform
         self.target_transform = target_transform
         self.seed = seed
         
+        # Ensure the data directory exists or create it
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+
         # CSV file paths
-        self.data_csv = self.data_dir / "fabdominal.csv"
-        self.train_csv = self.data_dir / "fabdominal_train.csv"
-        self.val_csv = self.data_dir / "fabdominal_val.csv"
-        self.test_csv = self.data_dir / "fabdominal_test.csv"
+        self.data_csv = self.data_dir / "fabd.csv"
+        self.train_csv = self.data_dir / "fabd_train.csv"
+        self.val_csv = self.data_dir / "fabd_val.csv"
+        self.test_csv = self.data_dir / "fabd_test.csv"
         
+        # Set random seed for reproducibility
+        np.random.seed(self.seed)
+
         # Creating csv file of the dataset
         self.process_csv()
         
-        # Split train/test
+        # Split train/test and train/val if requested
         self.split_pholdout()
-
-        # Split train/val if requested
-        if self.val_percentage is not None and not self.val_csv.exists():
-            self.split_train_val(self.val_percentage)
+        self.split_train_val()
 
         # Loading dataframes based on the split
         self.data = pd.read_csv(getattr(self, f'{self.split}_csv'))
 
     def __str__(self) -> str:
-        return f"FetalAbdominal_{self.split}"
+        return f"{self.__class__.__name__}__{self.split}"
 
     def __len__(self) -> int:
         return len(self.data)
@@ -86,19 +89,7 @@ class FetalAbdominal(VisionDataset):
         Returns:
             Tuple[torch.Tensor, str]: Transformed image and target.
         """
-        img_path = self.root / self.data.iloc[index]["path"]
-        image = Image.open(img_path)
-        image = image.convert("RGB")
-        
-        if self.transform:
-            image = self.transform(image)
-        
-        # TODO: target
-        target = str(self.data.iloc[index]["class"])
-        if self.target_transform:
-            target = self.target_transform(target)
-        
-        return image, target
+        # TODO: Implement the logic to load the image and segmentation mask
 
     @property
     def targets(self) -> List[str]:
@@ -124,6 +115,18 @@ class FetalAbdominal(VisionDataset):
         else:
             return patients.tolist()
 
+    @property
+    def structures_distr(self) -> pd.Series:
+        """Returns a dict with structure counts and proportions in the split."""
+        if "mask_structures" not in self.data.columns:
+            return {}
+        s = self.data["mask_structures"].dropna().apply(eval).explode()
+        t = pd.read_csv(self.data_csv)["mask_structures"].dropna().apply(eval).explode()
+        split_counts = s.value_counts()
+        total_counts = t.value_counts()
+        return {k: {"count": int(v), "perc": round(v / total_counts.get(k, 1), 2)} for k, v in split_counts.items()}
+
+
     def process_csv(self):
         """Create a unique CSV file with all the dataset information."""
         if self.data_csv.exists():
@@ -147,18 +150,12 @@ class FetalAbdominal(VisionDataset):
 
             # metadata
             structures = list(np.load(mask_full_path, allow_pickle=True).item()['structures'])
-            vendors = ["Siemens Acuson", "Voluson 730", "Philips-EPIQ Elite"]
-            transducer = "Curvilinear"
-            freq_range = "2-9 MHz"
 
             # add data to the list
             data_list.append({
                 "image_path": image_path,  
                 "class": "Abdomen",
                 "patient_id": patient_id,
-                "vendors": vendors,
-                "transducer": transducer,
-                "freq_range": freq_range,
                 "mask_path": mask_path,
                 "mask_structures": structures
             })
@@ -191,16 +188,19 @@ class FetalAbdominal(VisionDataset):
         
         print(f"✅ Split train/test completed and saved in {self.train_csv.parent}")
 
-    def split_train_val(self, val_percentage: float = 0.2):
+    def split_train_val(self):
         """
         Splits the training set into training and validation sets, ensuring no 
         data leakage and stratifying by the structures present in the masks.
 
         Args:
-            val_percentage (float): Percentage of the training set to use for validation.
+            val_size (float): Percentage of the training set to use for validation.
         """
-        if not (0 < val_percentage < 1):
-            raise ValueError("val_percentage must be between 0 and 1")
+        if self.val_csv.exists():
+            return
+        
+        if not (0 < self.val_size < 1):
+            raise ValueError("val_size must be between 0 and 1")
 
         # Read the training data
         train_df = pd.read_csv(self.train_csv)
@@ -215,7 +215,7 @@ class FetalAbdominal(VisionDataset):
         np.random.shuffle(grouped_indices)
 
         # Split into train and validation groups
-        val_size = int(len(grouped_indices) * val_percentage)
+        val_size = int(len(grouped_indices) * self.val_size)
         val_groups = grouped_indices[:val_size]
         train_groups = grouped_indices[val_size:]
         

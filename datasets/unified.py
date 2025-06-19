@@ -5,10 +5,13 @@ import numpy as np
 import pandas as pd
 import torch
 import SimpleITK as sitk
+import json
+import os
 from torchvision.datasets import VisionDataset
 
-from utils import get_label_mask, ALL_CLASSES, LABEL_COLORS_LIST
-from utils import DATASETS_CONFIG, DATASETS_COLOR_MAPPING, FUS_STRUCTURES
+# from utils import get_label_mask, ALL_CLASSES, LABEL_COLORS_LIST
+
+from utils.utils import DATASETS_CONFIGS, FUS_STRUCTS, FUS_STRUCTS_COLORS
 
 class UnifiedFetalDataset(VisionDataset):
     """Dataset unificato per immagini ecografiche fetali con maschere multi-struttura"""
@@ -46,24 +49,23 @@ class UnifiedFetalDataset(VisionDataset):
         self.supervised = supervised
         self.geometric_augs = augmentations[0] if augmentations else None
         self.color_augs = augmentations[1] if augmentations else None
-        self.class_values = list(range(1, len(FUS_STRUCTURES)))
+        self.class_values = list(range(1, len(FUS_STRUCTS)))
         self.samples = []
         self.dataframes = []
         
         # Caricamento dataset
         for ds_name in self.datasets:
-            cfg = DATASETS_CONFIG[ds_name]
-            csv_path = self.csv_data_path / cfg["dir_name"] / f'{cfg["csv_name"]}_{self.split}.csv'
+            cfg = DATASETS_CONFIGS[ds_name]
+            csv_path = self.csv_data_path / ds_name / f'{ds_name.lower()}_{self.split}.csv'
             
             if not csv_path.exists():
                 raise FileNotFoundError(f"CSV not found for {ds_name}: {csv_path}")
             
             df = pd.read_csv(csv_path)
-            if self.supervised:
-                if 'mask_path' in df.columns:
-                    df = df[df['mask_path'].notna()]  # Filter out rows with NaN masks
-                else:
-                    continue  # Skip datasets without mask_path column in supervised mode
+
+            # filtraggio dei dati per supervised training
+            df = self._filter_supervised_data(df, ds_name, cfg)
+            
             df['dataset'] = ds_name
             self.dataframes.append(df)
             self.samples += [(len(self.dataframes)-1, i) for i in range(len(df))]
@@ -75,11 +77,10 @@ class UnifiedFetalDataset(VisionDataset):
         df_idx, sample_idx = self.samples[idx]
         row = self.dataframes[df_idx].iloc[sample_idx]
         ds_name = row['dataset']
-        cfg = DATASETS_CONFIG[ds_name]
-
+        
         # Load image and mask
-        image, mask = getattr(self, f'_load_{ds_name}')(row, cfg)
-        # print(f'_load_{ds_name}') # debugging
+        image, mask = getattr(self, f'_load_{ds_name.lower()}')(row, ds_name)
+
         # Common image and mask resizing
         image = cv2.resize(image, self.target_size)
         mask = cv2.resize(mask, self.target_size, interpolation=cv2.INTER_NEAREST)
@@ -110,8 +111,28 @@ class UnifiedFetalDataset(VisionDataset):
         
         return image, encoded_mask
     
-    def _load_hc18(self, row, cfg) -> Tuple[np.ndarray, np.ndarray]:
-        ds_dir = self.data_path / cfg['dir_name']
+    def _filter_supervised_data(self, df: pd.DataFrame, ds_name: str, cfg: dict) -> pd.DataFrame:
+        """Filter dataframe for supervised training based on mask availability and dataset requirements"""
+        if not self.supervised:
+            return df
+            
+        if 'mask_path' in df.columns:
+            df = df[df['mask_path'].notna()]  # Filter out rows with NaN masks
+
+            # filtering also the classes for the FECST dataset
+            if ds_name == 'fecst':
+                req = set(cfg['structures'])
+                df = df[df['mask_structures'].apply(lambda x: req <= set(eval(x)) if isinstance(x, str) else False)]
+        else:
+            df = df.iloc[0:0]  # Return empty dataframe if no mask_path column
+            
+        return df
+
+    def _load_hc18(self, row, ds_name) -> Tuple[np.ndarray, np.ndarray]:
+        # load specific dataset configuration
+        # cfg = DATASETS_CONFIGS[ds_name]
+
+        ds_dir = self.data_path / ds_name
         img_path = ds_dir / row['image_path']
         mask_path = ds_dir / row['mask_path']
         
@@ -139,13 +160,11 @@ class UnifiedFetalDataset(VisionDataset):
         
         mask = new_mask
         # FINE POST-PROCESSING
-
-        # print('_load_hc18')
         
         return image, mask
     
-    def _load_abdominal(self, row, cfg) -> Tuple[np.ndarray, np.ndarray]:
-        ds_dir = self.data_path / cfg['dir_name']
+    def _load_fabd(self, row, ds_name) -> Tuple[np.ndarray, np.ndarray]:
+        ds_dir = self.data_path / ds_name
         mask_path = ds_dir / row['mask_path']
 
         # sfruttare solamente file .npy che contiene sia immagine orirginale che maschere
@@ -156,18 +175,17 @@ class UnifiedFetalDataset(VisionDataset):
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         
         # mask
+        ds_color_map = DATASETS_CONFIGS[ds_name]['mask_color_map']
         structures = data['structures']
         combined_mask = np.zeros((*next(iter(structures.values())).shape, 3), dtype=np.uint8)
         for name, mask in structures.items():
-            combined_mask[mask == 1] = DATASETS_COLOR_MAPPING['abdominal'][name.upper()]
+            combined_mask[mask == 1] = ds_color_map[name.upper()]
         mask = combined_mask
-
-        # print('_load_abdominal')
 
         return image, mask
     
-    def _load_planesdb(self, row, cfg) -> Tuple[np.ndarray, np.ndarray]:
-        ds_dir = self.data_path / cfg['dir_name']
+    def _load_fpdb(self, row, ds_name) -> Tuple[np.ndarray, np.ndarray]:
+        ds_dir = self.data_path / ds_name
         img_path = ds_dir / row['image_path']
 
         # image
@@ -182,12 +200,10 @@ class UnifiedFetalDataset(VisionDataset):
             mask = cv2.imread(str(mask_path), cv2.IMREAD_COLOR)
             mask = cv2.cvtColor(mask, cv2.COLOR_BGR2RGB)
 
-        # print('_load_planesdb')
-
         return image, mask
     
-    def _load_psfh(self, row, cfg) -> Tuple[np.ndarray, np.ndarray]:
-        ds_dir = self.data_path / cfg['dir_name']
+    def _load_ipsfh(self, row, ds_name) -> Tuple[np.ndarray, np.ndarray]:
+        ds_dir = self.data_path / ds_name
         img_path = ds_dir / row['image_path']
         mask_path = ds_dir / row['mask_path']
         
@@ -201,17 +217,17 @@ class UnifiedFetalDataset(VisionDataset):
         mask = sitk.ReadImage(mask_path)
         mask = sitk.GetArrayFromImage(mask)  # Convert to NumPy array (256x256)
         combined_mask = np.zeros((*mask.shape, 3), dtype=np.uint8)  # 256x256x3
-        color_map = {1: [255, 0, 0], 2: [0, 255, 0]}  # PS=red, FH=green
+        ps_color_map = DATASETS_CONFIGS[ds_name]['mask_color_map']['PS']
+        fh_color_map = DATASETS_CONFIGS[ds_name]['mask_color_map']['FH']
+        color_map = {1: ps_color_map, 2: fh_color_map}  # PS=red, FH=green
         for val, color in color_map.items():
             combined_mask[mask == val] = color
         mask = combined_mask
 
-        # print('_load_psfh')
-
         return image, mask
     
-    def _load_planesafrica(self, row, cfg) -> Tuple[np.ndarray, np.ndarray]:
-        ds_dir = self.data_path / cfg['dir_name']
+    def _load_fplr(self, row, ds_name) -> Tuple[np.ndarray, np.ndarray]:
+        ds_dir = self.data_path / ds_name
         img_path = ds_dir / row['image_path']
 
         # image
@@ -221,17 +237,67 @@ class UnifiedFetalDataset(VisionDataset):
         # empty mask
         mask = np.zeros((image.shape[0], image.shape[1], 3), dtype=np.uint8)
 
-        # print('_load_planesafrica')
+        return image, mask
+    
+    def _load_acslc(self, row, ds_name) -> Tuple[np.ndarray, np.ndarray]:
+        ds_dir = self.data_path / ds_name
+        img_path = ds_dir / row['image_path']
+        
+        # image
+        image = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
+        # mask (handle empty paths)
+        if pd.isna(row['mask_path']):
+            mask = np.zeros((image.shape[0], image.shape[1], 3), dtype=np.uint8)
+        else:
+            mask_path = ds_dir / row['mask_path']
+            mask = cv2.imread(str(mask_path), cv2.IMREAD_COLOR)
+            mask = cv2.cvtColor(mask, cv2.COLOR_BGR2RGB)
+            
+            # Post-processing: binarize mask
+            new_mask = np.zeros_like(mask)
+            mask_bin = (mask > 200).any(axis=2)
+            new_mask[mask_bin, 0] = 255
+            mask = new_mask
+
+        return image, mask
+
+    def _load_fecst(self, row, ds_name) -> Tuple[np.ndarray, np.ndarray]:
+        ds_dir = self.data_path / ds_name
+        img_path = ds_dir / row['image_path']
+
+        # image
+        image = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    
+        # mask (handle empty paths)
+        mask = np.zeros_like(image)
+        if not pd.isna(row['mask_path']):
+            json_mask_path = ds_dir / row['mask_path']
+            with open(json_mask_path) as f:
+                json_mask = json.load(f)
+                shapes = json_mask.get('shapes', [])
+            
+            colors = DATASETS_CONFIGS[ds_name]['mask_color_map']
+    
+            for shape in shapes:
+                label = shape['label']
+                points = np.array(shape['points'], dtype=np.int32)
+                color = colors.get(label)
+                
+                # Draw filled polygon
+                cv2.fillPoly(mask, [points], color)
 
         return image, mask
 
     def label_mask(self, mask: np.ndarray, dataset: str, class_values: list) -> np.ndarray:
         """Create 2D mask with universal IDs based on dataset-specific colors"""
         label_map = np.zeros(mask.shape[:2], dtype=np.uint8)
-        color_map = DATASETS_COLOR_MAPPING[dataset]
+        color_map = DATASETS_CONFIGS[dataset]['mask_color_map']
         
         for universal_name, c in color_map.items():
-            class_id = FUS_STRUCTURES.index(universal_name)
+            class_id = FUS_STRUCTS.index(universal_name)
             if class_id not in class_values:
                 continue
             

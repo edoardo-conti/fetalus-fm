@@ -2,12 +2,13 @@ import argparse
 
 import numpy as np
 
-# from datasets.fetalhc18 import FetalHC18
+from datasets.hc18 import VD_HC18
 # from datasets.fetalplanesdb import FetalPlanesDB
 # from datasets.fetalplanesafrica import FetalPlanesAfrica
 # from datasets.fetalabdominal import FetalAbdominal
 # from datasets.fetalpsfh import FetalPSFH
 # from datasets.fetalacouslic import FetalACOUSLIC
+from datasets.fects import FetalEchoCardiography
 
 #from utils import reset_dataset_files, plot_pie_chart, dataset_split_analysis
 
@@ -35,29 +36,11 @@ if __name__ == "__main__":
     # transformations
     # transforms = Compose([Resize((224, 224)), ToTensor()])
     
-    # FetalHC18 (Fetal_HC18_Z1327317)
-    # FHC18_train = FetalHC18(
-    #     root=args.dataset,
-    #     split="train",
-    #     val_percentage=0.1,
-    #     target_transform=np.array,
-    #     transform=transforms,
-    # )
-    # FHC18_val = FetalHC18(
-    #     root=args.dataset,
-    #     split="val",
-    #     val_percentage=0.1,
-    #     target_transform=np.array,
-    #     transform=transforms,
-    # )
-    # FHC18_test = FetalHC18(
-    #     root=args.dataset,
-    #     split="test",
-    #     val_percentage=0.1,
-    #     target_transform=np.array,
-    #     transform=transforms,
-    # )
-
+    # VD_HC18
+    VD_HC18_train = VD_HC18(root=args.dataset, split="train", val_percentage=0.1)
+    VD_HC18_val = VD_HC18(root=args.dataset, split="val", val_percentage=0.1)
+    VD_HC18_test = VD_HC18(root=args.dataset, split="test", val_percentage=0.1)
+    
     # FetalPlanesDB (Fetal_Planes_DB_Z3904280)
     # FPDB_train = FetalPlanesDB(
     #     root=args.dataset,
@@ -154,6 +137,16 @@ if __name__ == "__main__":
     # FACOUSLIC_train = FetalACOUSLIC(
     #     root=args.dataset,
     #     split="train",
+    #     target_transform=np.array,
+    #     transform=transforms,
+    # )
+
+    # FECST (Fetal Echocardiography Second Trimester)
+    # FECST_train = FetalEchoCardiography(
+    #     root=args.dataset,
+    #     split="train",
+    #     val_size=1,
+    #     test_size=2,
     #     target_transform=np.array,
     #     transform=transforms,
     # )

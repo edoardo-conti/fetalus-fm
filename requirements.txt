@@ -9,3 +9,4 @@ jupyter
 albumentations
 scikit-learn
 SimpleITK
+rich

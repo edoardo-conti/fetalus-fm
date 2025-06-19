@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Literal, Callable, Optional, Tuple, List, Set
-from PIL import Image
 from torchvision.datasets import VisionDataset
+from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 
 import numpy as np
@@ -9,62 +9,75 @@ import pandas as pd
 import torch
 import SimpleITK as sitk
 
+
 # ================================================================================== 
-# =========================== Fetal_ACOUSLIC_Z12697994 =============================
+# =================================== ACOUSLIC =====================================
 # ================================================================================== 
-class FetalACOUSLIC(VisionDataset):
+class VD_ACOUSLIC(VisionDataset):
     def __init__(
         self,
         root: Path,
+        split: Literal['train', 'test', 'val'],
         data_dir: Path = Path("./data_csv"),
-        split: Literal['train', 'test'] = 'train',
-        #test_size: float = 0.2,
+        val_size: Optional[float] = 0.20,
+        test_size: Optional[float] = 0.10,
+        annotated: bool = True,
         transform: Optional[Callable] = None,
         target_transform: Optional[Callable] = None,
         seed: int = 42,
     ):
         """
-        Dataset 'Fetal_ACOUSLIC_Z12697994' for Prenatal Ultrasound Frames acquired using a pre-specified blind-sweep protocol.
+        Dataset 'VD_ACOUSLIC' for Prenatal Ultrasound Frames acquired using a pre-specified blind-sweep protocol.
         https://zenodo.org/records/12697994
         
         Args:
             root (str): Root directory of the dataset.
+            split (Literal['train', 'val', 'test']): Dataset split, either 'train', 'val' or 'test'.
             data_dir (str): Directory where the processed dataset csv files will be stored.
-            split (Literal['train', 'test']): Dataset split, either 'train' or 'test'.
+            val_size (Optional[float]): Proportion of the training set to use for validation.
+            test_size (Optional[float]): Proportion of the dataset to use for testing.
             target (Optional[Callable]): A function/transform that takes in the image and transforms it.
             target_transform (Optional[Callable]): A function/transform that takes in the target and transforms it.
             seed (int): Random seed for reproducibility.
         """
         super().__init__(root, transform=transform, target_transform=target_transform)
         
-        if split not in ['train', 'test']:
-            raise ValueError("split must be one of ['train', 'test']")
+        if split not in ['train', 'val', 'test']:
+            raise ValueError("split must be one of ['train', 'val', 'test']")
         
         self.root = Path(root)
-        self.data_dir = data_dir / self.root.name
-        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.data_dir = Path(data_dir) / self.root.name
         self.split = split
-        #self.test_size = test_size
+        self.val_size = val_size
+        self.test_size = test_size
+        self.annotated = annotated
         self.transform = transform
         self.target_transform = target_transform
         self.seed = seed
         
+        # Ensure the data directory exists or create it
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+
         # CSV file paths
-        self.data_csv = self.data_dir / "facouslic.csv"
-        self.train_csv = self.data_dir / "facouslic_train.csv"
-        self.test_csv = self.data_dir / "facouslic_test.csv"
+        self.data_csv = self.data_dir / "acslc.csv"
+        self.train_csv = self.data_dir / "acslc_train.csv"
+        self.val_csv = self.data_dir / "acslc_val.csv"
+        self.test_csv = self.data_dir / "acslc_test.csv"
         
+        # Set random seed for reproducibility
+        np.random.seed(self.seed)
+
         # Creating csv file of the dataset
         self.process_csv()
 
-        # Split train/test
+        # Split train/val/test
         self.split_std()
 
         # Loading dataframes based on the split
         self.data = pd.read_csv(getattr(self, f'{self.split}_csv'))
-
+        
     def __str__(self) -> str:
-        return f"FetalACOUSLIC_{self.split}"
+        return f"{self.__class__.__name__}__{self.split}"
 
     def __len__(self) -> int:
         return len(self.data)
@@ -79,19 +92,7 @@ class FetalACOUSLIC(VisionDataset):
         Returns:
             Tuple[torch.Tensor, str]: Transformed image and target.
         """
-        img_path = self.root / self.data.iloc[index]["path"]
-        image = Image.open(img_path)
-        image = image.convert("RGB")
-        
-        if self.transform:
-            image = self.transform(image)
-        
-        # TODO: target
-        target = str(self.data.iloc[index]["class"])
-        if self.target_transform:
-            target = self.target_transform(target)
-        
-        return image, target
+        # TODO: Implement the logic to load the image and segmentation mask
 
     @property
     def targets(self) -> List[str]:
@@ -117,13 +118,21 @@ class FetalACOUSLIC(VisionDataset):
         else:
             return patients.tolist()
 
+    @property
+    def structures_distr(self) -> pd.Series:
+        """Returns a dict with structure counts and proportions in the split."""
+        if "mask_structures" not in self.data.columns:
+            return {}
+        s = self.data["mask_structures"].dropna().apply(eval).explode()
+        t = pd.read_csv(self.data_csv)["mask_structures"].dropna().apply(eval).explode()
+        split_counts = s.value_counts()
+        total_counts = t.value_counts()
+        return {k: {"count": int(v), "perc": round(v / total_counts.get(k, 1), 2)} for k, v in split_counts.items()}
+    
     
     def _load_mha(self, filepath: str):
         """Carica un file MHA e lo converte in un array NumPy."""
-        image = sitk.ReadImage(filepath)
-        array = sitk.GetArrayFromImage(image)  # Convert to NumPy array
-        return array
-
+        return sitk.GetArrayFromImage(sitk.ReadImage(filepath))
 
     def process_csv(self):
         """Crea un CSV unico con tutte le informazioni del dataset a partire dal csv di riferimento."""
@@ -191,7 +200,38 @@ class FetalACOUSLIC(VisionDataset):
         # Load dataset
         df = pd.read_csv(self.data_csv)
 
-        train_df = df
-        train_df.to_csv(self.train_csv, index=False)
+        # Get unique patient IDs
+        patient_ids = sorted(df['patient_id'].unique())
 
-        print(f"✅ Split train/test completed and saved in {self.train_csv.parent}")
+        # Split patient IDs into train+val and test
+        trainval_ids, test_ids = train_test_split(
+            patient_ids,
+            test_size=self.test_size,
+            random_state=self.seed,
+            shuffle=True,
+        )
+
+        # Further split trainval into train and val
+        if self.val_size and self.val_size > 0:
+            val_relative_size = self.val_size / (1 - self.test_size)
+            train_ids, val_ids = train_test_split(
+                trainval_ids,
+                test_size=val_relative_size,
+                random_state=self.seed,
+                shuffle=True,
+            )
+        else:
+            train_ids = trainval_ids
+            val_ids = []
+
+        # Create DataFrames for each split
+        train_df = df[df['patient_id'].isin(train_ids)]
+        val_df = df[df['patient_id'].isin(val_ids)]
+        test_df = df[df['patient_id'].isin(test_ids)]
+
+        # Save splits
+        train_df.to_csv(self.train_csv, index=False)
+        val_df.to_csv(self.val_csv, index=False)
+        test_df.to_csv(self.test_csv, index=False)
+
+        print(f"✅ Split train/val/test completed and saved in {self.train_csv.parent}")

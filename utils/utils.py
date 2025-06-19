@@ -4,79 +4,67 @@ import cv2
 import torch
 import matplotlib.pyplot as plt
 
-####################################################################
-### This dictionary contains the configuration for each dataset. ###
-####################################################################
 
-IMAGE_SIZE = (644, 644)
+IMAGE_SIZE = (224, 224) # (644,644) is the default image size used in DINOv2.
 SEED = 42
 
-DATASETS_CONFIG = {
-    'hc18': {
-        'dir_name': 'Fetal_HC18_Z1327317',
-        'csv_name': 'fhc18',
-        'image_col': 'image_path',
-        'mask_col': 'mask_path',
-        'structures_col': 'mask_structures',
-        'structures': ['BRAIN', 'CSP', 'LV']
+DATASETS_CONFIGS = {
+    'HC18': {
+        'structures': ['BRAIN', 'CSP', 'LV'],
+        'mask_color_map': {
+            'BRAIN': [255, 0, 0],   # Red
+            'CSP': [0, 255, 0],     # Green
+            'LV': [0, 0, 255]       # Blue
+        }
     },
-    'abdominal': {
-        'dir_name': 'Fetal_Abdominal_MD4GCPM9DSC3',
-        'csv_name': 'fabdominal',
-        'image_col': 'image_path',
-        'mask_col': 'mask_path',
-        'structures_col': 'mask_structures',
-        'structures': ['ARTERY', 'LIVER', 'STOMACH', 'VEIN']
+    'FABD': {
+        'structures': ['ARTERY', 'LIVER', 'STOMACH', 'VEIN'],
+        'mask_color_map': {
+            'ARTERY': [255, 0, 0],    # Red
+            'LIVER': [0, 255, 0],     # Green
+            'STOMACH': [0, 0, 255],   # Blue
+            'VEIN': [255, 255, 0]     # Yellow
+        }
     },
-    'planesafrica': {
-        'dir_name': 'Fetal_Planes_Africa_Z7540448',
-        'csv_name': 'fpafrica',
-        'image_col': 'image_path',
-        'structures_col': 'class',
-        'structures': []
+    'FPLR': {
+        'structures': [],
+        'mask_color_map': {}
     },
-    'planesdb': {
-        'dir_name': 'Fetal_Planes_DB_Z3904280',
-        'csv_name': 'fpdb',
-        'image_col': 'image_path',
-        'mask_col': 'mask_path',
-        'structures_col': 'mask_structures',
-        'structures': ['BRAIN', 'CSP', 'LV']
+    'FPDB': {
+        'structures': ['BRAIN', 'CSP', 'LV'],
+        'mask_color_map': {
+            'BRAIN': [255, 0, 0],       # Red
+            'CSP': [0, 255, 0],         # Green
+            'LV': [0, 0, 255]           # Blue
+        }
     },
-    'psfh': {
-        'dir_name': 'Fetal_PSFH_Z7851339',
-        'csv_name': 'fpsfh',
-        'image_col': 'image_path',
-        'mask_col': 'mask_path',
-        'structures_col': 'mask_structures',
-        'structures': ['PS', 'FH']
+    'IPSFH': {
+        'structures': ['PS', 'FH'],
+        'mask_color_map': {
+            'PS': [255, 0, 0],          # Red (Pubic Symphysis)
+            'FH': [0, 255, 0]           # Green (Fetal Head)
+        }
+    },
+    'ACSLC': {
+        'structures': ['ABDOMEN'],
+        'mask_color_map': {
+            'ABDOMEN': [255, 0, 0]      # Red (Abdomen)
+        }
+    },
+    'FECST': {
+        'structures': ['S', 'VD', 'VS', 'AD', 'AS'],
+        'mask_color_map': {
+            'S': [255, 0, 0],           # Red (Stomach)      
+            'VD': [0, 255, 0],          # Green (Right Ventricle)    
+            'VS': [0, 0, 255],          # Blue (Left Ventricle)    
+            'AD': [255, 255, 0],        # Yellow (Right Atrium)    
+            'AS': [0, 255, 255]         # Cyan (Left Atrium)       
+        }
     }
 }
 
-DATASETS_COLOR_MAPPING = {
-    'hc18': {
-        'BRAIN': [255, 0, 0],
-        'CSP': [0, 255, 0],
-        'LV': [0, 0, 255]
-    },
-    'abdominal': {
-        'ARTERY': [255, 0, 0],
-        'LIVER': [0, 255, 0],
-        'STOMACH': [0, 0, 255],
-        'VEIN': [255, 255, 0]
-    },
-    'planesdb': {
-        'BRAIN': [255, 0, 0],
-        'CSP': [0, 255, 0],
-        'LV': [0, 0, 255]
-    },
-    'psfh': {
-        'PS': [255, 0, 0],
-        'FH': [0, 255, 0]
-    },
-}
 
-FUS_STRUCTURES = [
+FUS_STRUCTS = [
     'BACKGROUND',
     'BRAIN',        # HC18, PlanesDB
     'CSP',          # HC18, PlanesDB 
@@ -86,20 +74,33 @@ FUS_STRUCTURES = [
     'STOMACH',      # Abdominal
     'VEIN',         # Abdominal
     'FH',           # PSFH (Fetal Head)
-    'PS'            # PSFH (Pubic Symphysis)
+    'PS',           # PSFH (Pubic Symphysis)
+    'ABDOMEN',      # ACSLC (Abdomen)
+    # 'S',            # FECST (Stomach)
+    # 'VD',           # FECST (Right Ventricle)
+    # 'VS',           # FECST (Left Ventricle)
+    # 'AD',           # FECST (Right Atrium)
+    # 'AS'            # FECST (Left Atrium)
 ]
 
-FUS_STRUCTURES_COLORS = {
+
+FUS_STRUCTS_COLORS = {
     0: [0, 0, 0],       # BACKGROUND (Black)
-    1: [255, 0, 0],     # BRAIN (Red)
-    2: [0, 255, 0],     # CSP (Green)
-    3: [0, 0, 255],     # LV (Blue)
-    4: [255, 255, 0],   # ARTERY (Yellow)
-    5: [0, 255, 255],   # LIVER (Cyan)
-    6: [255, 0, 255],   # STOMACH (Magenta)
-    7: [128, 0, 0],     # VEIN (Maroon)
-    8: [128, 128, 0],   # Fetal Head (Olive)
-    9: [0, 128, 128],   # Pubic Symphysis (Teal)
+    1: [255, 0, 0],     # BRAIN [HC18, FPDB](Red)
+    2: [0, 255, 0],     # CSP [HC18, FPDB](Green)
+    3: [0, 0, 255],     # LV [HC18, FPDB](Blue)
+    4: [255, 255, 0],   # ARTERY [FADB](Yellow)
+    5: [0, 255, 255],   # LIVER [FADB](Cyan)
+    6: [255, 0, 255],   # STOMACH [FADB](Magenta)
+    7: [128, 0, 0],     # VEIN [FADB](Maroon)
+    8: [128, 128, 0],   # Fetal Head [IPSFH](Olive)
+    9: [0, 128, 128],   # Pubic Symphysis [IPSFH](Teal)
+    10: [255, 128, 0],  # Abdomen [ACSLC](Orange)
+    # 10: [255, 64, 0],  # FECST Stomach (TODO: to fix)
+    # 11: [128, 0, 255],  # FECST Right Ventricle (Purple)
+    # 12: [0, 128, 255],  # FECST Left Ventricle (Light Blue)
+    # 13: [255, 0, 128],  # FECST Right Atrium (Pink)
+    # 14: [128, 255, 0]   # FECST Left Atrium (Light Green)
 }
 
 def mask2d_to_rgb(mask, structure_colors):
@@ -304,7 +305,7 @@ class SaveBestModel:
         if current_valid_loss < self.best_valid_loss:
             self.best_valid_loss = current_valid_loss
             print(f"\nBest validation loss: {self.best_valid_loss}")
-            print(f"\nSaving best model for epoch: {epoch+1}\n")
+            print(f"\nSaving best model for minimizing loss of epoch: {epoch+1}\n")
             torch.save({
                 'epoch': epoch+1,
                 'model_state_dict': model.state_dict(),
@@ -324,7 +325,7 @@ class SaveBestModelIOU:
         if current_iou > self.best_iou:
             self.best_iou = current_iou
             print(f"\nBest validation IoU: {self.best_iou}")
-            print(f"\nSaving best model for epoch: {epoch+1}\n")
+            print(f"\nSaving best model for maximising IoU of epoch: {epoch+1}\n")
             torch.save({
                 'epoch': epoch+1,
                 'model_state_dict': model.state_dict(),

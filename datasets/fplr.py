@@ -3,32 +3,32 @@ from typing import Literal, Callable, Optional, Tuple, List, Set
 
 import pandas as pd
 import torch
-from PIL import Image
 from torchvision.datasets import VisionDataset
 from sklearn.model_selection import train_test_split
 
 # ================================================================================== 
-# =========================== Fetal_Planes_Africa_Z7540448 =============================
+# ==================================== VD_FPLR =====================================
 # ================================================================================== 
-class FetalPlanesAfrica(VisionDataset):
+class VD_FPLR(VisionDataset):
     def __init__(
         self,
         root: Path,
+        split: Literal['train', 'test', 'val'],
         data_dir: Path = Path("./data_csv"),
-        split: Literal['train', 'val', 'test'] = 'train',
-        val_percentage: Optional[float] = None,
+        val_size: Optional[float] = 0.2,
         transform: Optional[Callable] = None,
         target_transform: Optional[Callable] = None,
         seed: int = 42,
     ):
         """
-        Dataset 'Fetal_Planes_Africa_Z7540448' for maternal fetal US planes from low-resource imaging settings in five African countries.
+        Dataset 'VD_FPLR' for maternal fetal US planes from low-resource imaging settings in five African countries.
         https://zenodo.org/records/7540448
         
         Args:
             root (str): Root directory of the dataset.
+            split (Literal['train', 'test', 'val']): Dataset split, either 'train', 'test' or 'val'.
             data_dir (str): Directory where the processed dataset csv files will be stored.
-            split (Literal['train', 'test']): Dataset split, either 'train' or 'test'.
+            val_size (Optional[float]): Proportion of the training set to use for validation.
             target (Optional[Callable]): A function/transform that takes in the image and transforms it.
             target_transform (Optional[Callable]): A function/transform that takes in the target and transforms it.
             seed (int): Random seed for reproducibility.
@@ -39,35 +39,34 @@ class FetalPlanesAfrica(VisionDataset):
             raise ValueError("split must be one of ['train', 'test', 'val']")
         
         self.root = Path(root)
-        self.data_dir = data_dir / self.root.name
-        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.data_dir = Path(data_dir) / self.root.name
         self.split = split
-        self.val_percentage = val_percentage
+        self.val_size = val_size
         self.transform = transform
         self.target_transform = target_transform
         self.seed = seed
         
+        # Ensure the data directory exists or create it
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        
         # CSV file paths
-        self.data_csv = self.data_dir / "fpafrica.csv"
-        self.train_csv = self.data_dir / "fpafrica_train.csv"
-        self.val_csv = self.data_dir / "fpafrica_val.csv"
-        self.test_csv = self.data_dir / "fpafrica_test.csv"
+        self.data_csv = self.data_dir / "fplr.csv"
+        self.train_csv = self.data_dir / "fplr_train.csv"
+        self.val_csv = self.data_dir / "fplr_val.csv"
+        self.test_csv = self.data_dir / "fplr_test.csv"
         
         # Creating csv file of the dataset
         self.process_csv()
 
-        # Split train/test
+        # Split train/test and train/val if requested
         self.split_std()
-
-        # Split train/val if requested
-        if self.val_percentage is not None and not self.val_csv.exists():
-            self.split_train_val()
+        self.split_train_val()
 
         # Loading dataframes based on the split
         self.data = pd.read_csv(getattr(self, f'{self.split}_csv'))
     
     def __str__(self) -> str:
-        return f"FetalPlanesAfrica_{self.split}"
+        return f"{self.__class__.__name__}__{self.split}"
 
     def __len__(self) -> int:
         return len(self.data)
@@ -82,19 +81,7 @@ class FetalPlanesAfrica(VisionDataset):
         Returns:
             Tuple[torch.Tensor, str]: Transformed image and target.
         """
-        img_path = self.root / self.data.iloc[index]["path"]
-        image = Image.open(img_path)
-        image = image.convert("RGB")
-        
-        if self.transform:
-            image = self.transform(image)
-        
-        # TODO: target
-        target = str(self.data.iloc[index]["class"])
-        if self.target_transform:
-            target = self.target_transform(target)
-        
-        return image, target
+        # TODO: Implement the logic to load the image and segmentation mask
 
     @property
     def targets(self) -> List[str]:
@@ -120,6 +107,7 @@ class FetalPlanesAfrica(VisionDataset):
         else:
             return patients.tolist()
 
+
     def process_csv(self):
         """Create a unique CSV file with all the dataset information."""
         if self.data_csv.exists():
@@ -135,15 +123,6 @@ class FetalPlanesAfrica(VisionDataset):
             "Fetal femur": "Femur",
             "Fetal thorax": "Thorax"
         }
-
-        # Center metadata for each country (https://arxiv.org/pdf/2209.09610 , Table 1)
-        center_metadata = {
-            "Malawi": ["Mindray DC-N2", "Curvilinear", "3.5 MHz", "Queen Elizabeth Central Hospital", "2nd and 3rd"],
-            "Egypt": ["Voluson P8", "Curvilinear", "7 MHz", "Sayedaty Center", "2nd"],
-            "Uganda": ["ACUSON X600", "Curvilinear", "3 to 7.5 MHz", "Mulago National Referral Hospital", "3rd"],
-            "Ghana": ["EDAN DUS 60", "Curvilinear", "3.5 to 5 MHz", "KBTH Polyclinic (Accra)", "2nd and 3rd"],
-            "Algeria": ["Voluson S8", "Curvilinear", "3 to 7.5 MHz", "EPH Kouba and Clinique Des Lilas", "2nd and 3rd"]
-        }
         
         # Process data
         data_list = []
@@ -156,18 +135,11 @@ class FetalPlanesAfrica(VisionDataset):
                 print(f"Warning: Image not found {image_path}")
                 continue
             
-            center_info = center_metadata.get(row["Center"], ["-", "-", "-", "-", "-"])
-
             data_list.append({
                 "image_path": f"{country}/{image_name}",  
                 "class": plane_mapping.get(row["Plane"], row["Plane"]), 
                 "patient_id": row["Patient_num"],
                 "country": country,
-                "center": center_info[3],
-                "vendors": center_info[0],
-                "transducer": center_info[1],
-                "freq_range": center_info[2],
-                "trimester_pregnancy": center_info[4],
                 "split": "train" if row["Train"] == 0 else "test"
             })
 
@@ -196,8 +168,11 @@ class FetalPlanesAfrica(VisionDataset):
         patient data leakage by grouping by patient_id.
 
         Args:
-            val_percentage (float): Percentage of the training set to use for validation.
+            val_size (float): Percentage of the training set to use for validation.
         """
+        if self.val_csv.exists() or not (0 < self.val_size < 1):
+            return
+        
         # Read the training data
         df = pd.read_csv(self.train_csv)
         
@@ -205,7 +180,7 @@ class FetalPlanesAfrica(VisionDataset):
         patients = df["patient_id"].unique()
         train_patients, val_patients = train_test_split(
             patients,
-            test_size=self.val_percentage,
+            test_size=self.val_size,
             random_state=self.seed,
         )
 

@@ -1,6 +1,5 @@
 from pathlib import Path
 from typing import Literal, Callable, Optional, Tuple, List, Set
-from PIL import Image
 from torchvision.datasets import VisionDataset
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
@@ -12,28 +11,28 @@ import SimpleITK as sitk
 
 
 # ================================================================================== 
-# =========================== Fetal_PSFH_Z7851339 =============================
+# ==================================== VD_IPSFH ====================================
 # ================================================================================== 
-class FetalPSFH(VisionDataset):
+class VD_IPSFH(VisionDataset):
     def __init__(
         self,
         root: Path,
+        split: Literal['train', 'val', 'test'],
         data_dir: Path = Path("./data_csv"),
-        split: Literal['train', 'val', 'test'] = 'train',
-        val_percentage: Optional[float] = None,
-        test_size: float = 0.2,
+        val_size: Optional[float] = 0.15,
         transform: Optional[Callable] = None,
         target_transform: Optional[Callable] = None,
         seed: int = 42,
     ):
         """
-        Dataset 'Fetal_PSFH_Z7851339' for Pubic Symphysis and Fetal Head Segmentation (PSFHS).
+        Dataset 'VD_IPSFH' for Pubic Symphysis and Fetal Head Segmentation (PSFHS).
         https://zenodo.org/records/7851339 , https://zenodo.org/records/10969427
         
         Args:
             root (str): Root directory of the dataset.
+            split (Literal['train', 'val', 'test']): Dataset split, either 'train', 'val' or 'test'.
             data_dir (str): Directory where the processed dataset csv files will be stored.
-            split (Literal['train', 'test']): Dataset split, either 'train' or 'test'.
+            val_size (Optional[float]): Proportion of the training set to use for validation.
             target (Optional[Callable]): A function/transform that takes in the image and transforms it.
             target_transform (Optional[Callable]): A function/transform that takes in the target and transforms it.
             seed (int): Random seed for reproducibility.
@@ -44,36 +43,34 @@ class FetalPSFH(VisionDataset):
             raise ValueError("split must be one of ['train', 'test', 'val']")
         
         self.root = Path(root)
-        self.data_dir = data_dir / self.root.name
-        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.data_dir = Path(data_dir) / self.root.name
         self.split = split
-        self.val_percentage = val_percentage
-        self.test_size = test_size
+        self.val_size = val_size
         self.transform = transform
         self.target_transform = target_transform
         self.seed = seed
 
+        # Ensure the data directory exists or create it
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+
         # CSV file paths
-        self.data_csv = self.data_dir / "fpsfh.csv"
-        self.train_csv = self.data_dir / "fpsfh_train.csv"
-        self.val_csv = self.data_dir / "fpsfh_val.csv"
-        self.test_csv = self.data_dir / "fpsfh_test.csv"
+        self.data_csv = self.data_dir / "ipsfh.csv"
+        self.train_csv = self.data_dir / "ipsfh_train.csv"
+        self.val_csv = self.data_dir / "ipsfh_val.csv"
+        self.test_csv = self.data_dir / "ipsfh_test.csv"
         
         # Creating csv file of the dataset
         self.process_csv()
         
-        # Split train/test
+        # Split train/test and train/val if requested
         self.split_std()
-
-        # Split train/val if requested
-        if self.val_percentage is not None and not self.val_csv.exists():
-            self.split_train_val(self.val_percentage)
+        self.split_train_val()
 
         # Loading dataframes based on the split
         self.data = pd.read_csv(getattr(self, f'{self.split}_csv'))
 
     def __str__(self) -> str:
-        return f"FetalPSFH_{self.split}"
+        return f"{self.__class__.__name__}__{self.split}"
 
     def __len__(self) -> int:
         return len(self.data)
@@ -88,19 +85,7 @@ class FetalPSFH(VisionDataset):
         Returns:
             Tuple[torch.Tensor, str]: Transformed image and target.
         """
-        img_path = self.root / self.data.iloc[index]["path"]
-        image = Image.open(img_path)
-        image = image.convert("RGB")
-        
-        if self.transform:
-            image = self.transform(image)
-        
-        # TODO: target
-        target = str(self.data.iloc[index]["class"])
-        if self.target_transform:
-            target = self.target_transform(target)
-        
-        return image, target
+        # TODO: Implement the logic to load the image and segmentation mask
 
     @property
     def targets(self) -> List[str]:
@@ -126,6 +111,17 @@ class FetalPSFH(VisionDataset):
         else:
             return patients.tolist()
 
+    @property
+    def structures_distr(self) -> pd.Series:
+        """Returns a dict with structure counts and proportions in the split."""
+        if "mask_structures" not in self.data.columns:
+            return {}
+        s = self.data["mask_structures"].dropna().apply(eval).explode()
+        t = pd.read_csv(self.data_csv)["mask_structures"].dropna().apply(eval).explode()
+        split_counts = s.value_counts()
+        total_counts = t.value_counts()
+        return {k: {"count": int(v), "perc": round(v / total_counts.get(k, 1), 2)} for k, v in split_counts.items()}
+    
     
     def _load_mha(self, filepath: str):
         """Carica un file MHA e lo converte in un array NumPy."""
@@ -195,16 +191,19 @@ class FetalPSFH(VisionDataset):
 
         print(f"✅ Split train/test completed and saved in {self.train_csv.parent}")
     
-    def split_train_val(self, val_percentage: float = 0.2):
+    def split_train_val(self):
         """
         Splits the training set into training and validation sets, ensuring no 
         data leakage and stratifying by the structures present in the masks.
 
         Args:
-            val_percentage (float): Percentage of the training set to use for validation.
+            val_size (float): Percentage of the training set to use for validation.
         """
-        if not (0 < val_percentage < 1):
-            raise ValueError("val_percentage must be between 0 and 1")
+        if self.val_csv.exists():
+            return
+        
+        if not (0 < self.val_size < 1):
+            raise ValueError("val_size must be between 0 and 1")
 
         # Read the training data
         train_df = pd.read_csv(self.train_csv)
@@ -212,7 +211,7 @@ class FetalPSFH(VisionDataset):
         # Split into train and validation sets
         train_df, val_df = train_test_split(
             train_df,
-            test_size=val_percentage,
+            test_size=self.val_size,
             random_state=self.seed,
             stratify=train_df['mask_structures']
         )

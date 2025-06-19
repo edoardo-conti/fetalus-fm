@@ -1,8 +1,20 @@
 import numpy as np
 
-# Source: https://github.com/sacmehta/ESPNet/blob/master/train/IOUEval.py
-
+ 
 class IOUEval:
+    """
+    A class for evaluating Intersection over Union (IoU) and other segmentation metrics.
+    Source: https://github.com/sacmehta/ESPNet/blob/master/train/IOUEval.py
+    This class provides methods to compute and accumulate metrics for semantic segmentation tasks,
+    including overall accuracy, per-class accuracy, per-class IoU, and mean IoU (mIoU) across multiple batches.
+    Attributes:
+        nClasses (int): Number of classes in the segmentation task.
+        overall_acc (float): Accumulated overall accuracy across batches.
+        per_class_acc (np.ndarray): Accumulated per-class accuracy across batches.
+        per_class_iu (np.ndarray): Accumulated per-class IoU across batches.
+        mIOU (float): Accumulated mean IoU across batches.
+        batchCount (int): Number of batches processed.
+    """
     def __init__(self, nClasses):
         self.nClasses = nClasses
         self.reset()

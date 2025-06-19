@@ -3,44 +3,39 @@ from typing import Literal, Callable, Optional, Tuple, List
 from tqdm import tqdm
 from PIL import Image
 from torchvision.datasets import VisionDataset
-from utils import set_class_values, get_label_mask
 
 import numpy as np
 import pandas as pd
 import re
 import torch
-import cv2
 
 # ================================================================================== 
-# ============================== Fetal_HC18_Z1327317 ===============================
+# ==================================== VD_HC18 =====================================
 # ================================================================================== 
-class FetalHC18(VisionDataset):
+class VD_HC18(VisionDataset):
     def __init__(
         self,
         root: Path,
+        split: Literal['train', 'test', 'val'],
         data_dir: Path = Path("./data_csv"),
-        split: Literal['train', 'test', 'val'] = 'train',
-        val_percentage: Optional[float] = None,
-        label_colors_list: List[Tuple[int, int, int]] = None,
-        all_classes: List[str] = None,
-        classes_to_train: List[str] = None,
+        val_size: Optional[float] = 0.2,
         transform: Optional[Callable] = None,
         target_transform: Optional[Callable] = None,
         augmentation: Optional[Callable] = None,
         seed: int = 42
     ):
         """
-        Dataset 'Fetal_HC18_Z1327317' for head circumference measurement.
+        Dataset 'VD_HC18' for head circumference measurement.
         https://zenodo.org/records/1327317
         
         Args:
             root (str): Root directory of the dataset.
+            split (Literal['train',  'val', 'test']): Dataset split, either 'train', 'val' or 'test'.
             data_dir (str): Directory where the processed dataset csv files will be stored.
-            split (Literal['train', 'test', 'val']): Dataset split, either 'train', 'test', or 'val'.
+            val_size (Optional[float]): Proportion of the training set to use for validation.
             transform (Optional[Callable]): A function/transform that takes in the image and transforms it.
             target_transform (Optional[Callable]): A function/transform that takes in the target and transforms it.
             seed (int): Random seed for reproducibility.
-            val_percentage (Optional[float]): Percentage of the training set to use for validation. If provided, splits the training set.
         """
         super().__init__(root, transform=transform, target_transform=target_transform)
         
@@ -48,40 +43,38 @@ class FetalHC18(VisionDataset):
             raise ValueError("split must be one of ['train', 'test', 'val']")
         
         self.root = Path(root)
-        self.data_dir = data_dir / self.root.name
-        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.data_dir = Path(data_dir) / self.root.name
         self.split = split
-        self.val_percentage = val_percentage
-        self.label_colors_list = label_colors_list
-        self.all_classes = all_classes
-        self.classes_to_train = classes_to_train
-        self.class_values = set_class_values(self.all_classes, self.classes_to_train)
+        self.val_size = val_size
         self.transform = transform
         self.target_transform = target_transform
         self.augmentation = augmentation
         self.seed = seed
         
         # CSV file paths
-        self.data_csv = self.data_dir / "fhc18.csv"
-        self.train_csv = self.data_dir / "fhc18_train.csv"
-        self.test_csv = self.data_dir / "fhc18_test.csv"
-        self.val_csv = self.data_dir / "fhc18_val.csv"
+        self.data_csv = self.data_dir / "hc18.csv"
+        self.train_csv = self.data_dir / "hc18_train.csv"
+        self.test_csv = self.data_dir / "hc18_test.csv"
+        self.val_csv = self.data_dir / "hc18_val.csv"
         
+        # Ensure the data directory exists or create it
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+
+        # Set random seed for reproducibility
+        np.random.seed(self.seed)
+
         # Creating csv file of the dataset
         self.process_csv()
 
-        # Split train/test
+        # Split train/test and train/val if requested
         self.split_std()
-
-        # Split train/val if requested
-        if self.val_percentage is not None and not self.val_csv.exists():
-            self.split_train_val(self.val_percentage)
+        self.split_train_val()
 
         # Loading dataframes based on the split
         self.data = pd.read_csv(getattr(self, f'{self.split}_csv'))
-        
+    
     def __str__(self) -> str:
-        return f"FetalHC18_{self.split}"
+        return f"{self.__class__.__name__}__{self.split}"
 
     def __len__(self) -> int:
         return len(self.data)
@@ -96,30 +89,13 @@ class FetalHC18(VisionDataset):
         Returns:
             Tuple[torch.Tensor, torch.LongTensor]: Transformed image and target.
         """
-        img_path = self.root / self.data.iloc[index]["image_path"]
-        image = cv2.imread(img_path, cv2.IMREAD_COLOR)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB).astype('float32')
-        
-        mask_path = self.root / self.data.iloc[index]["mask_path"]
-        mask = cv2.imread(mask_path, cv2.IMREAD_COLOR)
-        mask = cv2.cvtColor(mask, cv2.COLOR_BGR2RGB)
-
-        augmented = self.augmentation(image=image, mask=mask)
-        image = augmented['image']
-        mask = augmented['mask']
-
-        mask = get_label_mask(mask, self.class_values, self.label_colors_list).astype('uint8')
-
-        # To C, H, W.
-        image = image.transpose(2, 0, 1)
-
-        return torch.tensor(image), torch.LongTensor(mask)
+        # TODO: Implement the logic to load the image and segmentation mask
     
     @property
     def targets(self) -> List[str]:
         """Returns the list of labels in the current dataset."""
         targets = self.data["class"]
-
+        
         if self.target_transform:
             return self.target_transform(targets)
         else:
@@ -138,6 +114,18 @@ class FetalHC18(VisionDataset):
             mask_structures.update(eval(struct_list))
         return sorted(mask_structures)
     
+    @property
+    def structures_distr(self) -> pd.Series:
+        """Returns a dict with structure counts and proportions in the split."""
+        if "mask_structures" not in self.data.columns:
+            return {}
+        s = self.data["mask_structures"].dropna().apply(eval).explode()
+        t = pd.read_csv(self.data_csv)["mask_structures"].dropna().apply(eval).explode()
+        split_counts = s.value_counts()
+        total_counts = t.value_counts()
+        return {k: {"count": int(v), "perc": round(v / total_counts.get(k, 1), 2)} for k, v in split_counts.items()}
+
+
     def _process_mask(self, mask_path: Path) -> List[str]:
         """Process the mask image and return the structures present."""
         mask_image = Image.open(self.root / mask_path)
@@ -157,6 +145,7 @@ class FetalHC18(VisionDataset):
             structures_present.append('LV')
         
         return structures_present
+
 
     def process_csv(self):
         """Create a unique CSV file with train and test information if it does not already exist."""
@@ -208,6 +197,7 @@ class FetalHC18(VisionDataset):
         df_final = pd.DataFrame(data_list)
         df_final.to_csv(self.data_csv, index=False)
         print(f"✅ Full dataset saved in {self.data_csv}")
+    
 
     def split_std(self):
         """Manages train and test partitioning."""
@@ -224,16 +214,17 @@ class FetalHC18(VisionDataset):
         
         print(f"✅ Split train/test completed and saved in {self.train_csv.parent}")
     
-    def split_train_val(self, val_percentage: float = 0.2):
+
+    def split_train_val(self):
         """
         Splits the training set into training and validation sets, ensuring no 
         data leakage and stratifying by the structures present in the masks.
-
-        Args:
-            val_percentage (float): Percentage of the training set to use for validation.
         """
-        if not (0 < val_percentage < 1):
-            raise ValueError("val_percentage must be between 0 and 1")
+        if self.val_csv.exists():
+            return
+
+        if not (0 < self.val_size < 1):
+            raise ValueError("val_size must be between 0 and 1")
 
         # Read the training data
         train_df = pd.read_csv(self.train_csv)
@@ -247,11 +238,10 @@ class FetalHC18(VisionDataset):
         # Shuffle groups
         grouped = train_df.groupby(['base_filename', 'mask_structures_str'])
         grouped_indices = list(grouped.groups.keys())
-        np.random.seed(self.seed)
         np.random.shuffle(grouped_indices)
 
         # Split into train and validation groups
-        val_size = int(len(grouped_indices) * val_percentage)
+        val_size = int(len(grouped_indices) * self.val_size)
         val_groups = grouped_indices[:val_size]
         train_groups = grouped_indices[val_size:]
         

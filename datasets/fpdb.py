@@ -8,29 +8,31 @@ import numpy as np
 import pandas as pd
 import re
 import torch
+from sklearn.model_selection import StratifiedShuffleSplit
 
 # ================================================================================== 
-# =========================== Fetal_Planes_DB_Z3904280 =============================
+# ==================================== VD_FPDB =====================================
 # ================================================================================== 
-class FetalPlanesDB(VisionDataset):
+class VD_FPDB(VisionDataset):
     def __init__(
         self,
         root: Path,
+        split: Literal['train', 'val', 'test'],
         data_dir: Path = Path("./data_csv"),
-        split: Literal['train', 'val', 'test'] = 'train',
-        val_percentage: Optional[float] = None,
+        val_size: Optional[float] = 0.2,
         transform: Optional[Callable] = None,
         target_transform: Optional[Callable] = None,
         seed: int = 42,
     ):
         """
-        Dataset 'Fetal_Planes_DB_Z3904280' for common maternal-fetal ultrasound images.
+        Dataset 'VD_FPDB' for common maternal-fetal ultrasound images.
         https://zenodo.org/records/3904280
         
         Args:
             root (str): Root directory of the dataset.
+            split (Literal['train', 'test', 'val']): Dataset split, either 'train', 'test' or 'val'.
             data_dir (str): Directory where the processed dataset csv files will be stored.
-            split (Literal['train', 'test']): Dataset split, either 'train' or 'test'.
+            val_size (Optional[float]): Proportion of the training set to use for validation.
             target (Optional[Callable]): A function/transform that takes in the image and transforms it.
             target_transform (Optional[Callable]): A function/transform that takes in the target and transforms it.
             seed (int): Random seed for reproducibility.
@@ -41,35 +43,37 @@ class FetalPlanesDB(VisionDataset):
             raise ValueError("split must be one of ['train', 'val', 'test']")
         
         self.root = Path(root)
-        self.data_dir = data_dir / self.root.name
-        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.data_dir = Path(data_dir) / self.root.name
         self.split = split
-        self.val_percentage = val_percentage
+        self.val_size = val_size
         self.transform = transform
         self.target_transform = target_transform
         self.seed = seed
         
+        # Ensure the data directory exists or create it
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+
         # CSV file paths
         self.data_csv = self.data_dir / "fpdb.csv"
         self.train_csv = self.data_dir / "fpdb_train.csv"
         self.val_csv = self.data_dir / "fpdb_val.csv"
         self.test_csv = self.data_dir / "fpdb_test.csv"
         
+        # Set random seed for reproducibility
+        np.random.seed(self.seed)
+
         # Creating csv file of the dataset
         self.process_csv()
 
-        # Split train/test
+        # Split train/test and train/val if requested
         self.split_std()
-
-        # Split train/val if requested
-        if self.val_percentage is not None and not self.val_csv.exists():
-            self.split_train_val(self.val_percentage)
+        self.split_train_val()
 
         # Loading dataframes based on the split
         self.data = pd.read_csv(getattr(self, f'{self.split}_csv'))
 
     def __str__(self) -> str:
-        return f"FetalPlanesDB_{self.split}"
+        return f"{self.__class__.__name__}__{self.split}"
 
     def __len__(self) -> int:
         return len(self.data)
@@ -84,25 +88,13 @@ class FetalPlanesDB(VisionDataset):
         Returns:
             Tuple[torch.Tensor, str]: Transformed image and target.
         """
-        img_path = self.root / self.data.iloc[index]["image_path"]
-        image = Image.open(img_path)
-        image = image.convert("RGB")
-        
-        if self.transform:
-            image = self.transform(image)
-        
-        # TODO: target
-        target = str(self.data.iloc[index]["class"])
-        if self.target_transform:
-            target = self.target_transform(target)
-        
-        return image, target
+        # TODO: Implement the logic to load the image and segmentation mask
 
     @property
     def targets(self) -> List[str]:
         """Returns the list of labels in the current dataset."""
         targets = self.data["class"]
-
+        
         if self.target_transform:
             return self.target_transform(targets)
         else:
@@ -122,6 +114,18 @@ class FetalPlanesDB(VisionDataset):
         else:
             return patients.tolist()
 
+    @property
+    def structures_distr(self) -> pd.Series:
+        """Returns a dict with structure counts and proportions in the split."""
+        if "mask_structures" not in self.data.columns:
+            return {}
+        s = self.data["mask_structures"].dropna().apply(eval).explode()
+        t = pd.read_csv(self.data_csv)["mask_structures"].dropna().apply(eval).explode()
+        split_counts = s.value_counts()
+        total_counts = t.value_counts()
+        return {k: {"count": int(v), "perc": round(v / total_counts.get(k, 1), 2)} for k, v in split_counts.items()}
+    
+    
     def _process_mask(self, mask_path: Path) -> List[str]:
         """Process the mask image and return the structures present."""
         mask_image = Image.open(self.root / mask_path)
@@ -226,37 +230,46 @@ class FetalPlanesDB(VisionDataset):
         
         print(f"✅ Split train/test completed and saved in {self.train_csv.parent}")
 
-    def split_train_val(self, val_percentage: float = 0.2):
+    def split_train_val(self):
         """
         Splits the training set into training and validation sets, ensuring no 
-        data leakage and stratifying by the structures present in the masks.
+        data leakage at patient level and stratifying by brain_plane.
 
         Args:
-            val_percentage (float): Percentage of the training set to use for validation.
+            val_size (float): Percentage of the training set to use for validation.
         """
-        if not (0 < val_percentage < 1):
-            raise ValueError("val_percentage must be between 0 and 1")
+        if self.val_csv.exists():
+            return
+
+        if not (0 < self.val_size < 1):
+            raise ValueError("val_size must be between 0 and 1")
         
         # Read the training data
         train_df = pd.read_csv(self.train_csv)
-        
-        # Shuffle groups
-        grouped = train_df.groupby(['patient_id', 'brain_plane'])
-        grouped_indices = list(grouped.groups.keys())
-        np.random.seed(self.seed)
-        np.random.shuffle(grouped_indices)
 
-        # Split into train and validation groups
-        val_size = int(len(grouped_indices) * val_percentage)
-        val_groups = grouped_indices[:val_size]
-        train_groups = grouped_indices[val_size:]
-        
-        # Create new train and validation DataFrames
-        val_df = pd.concat([grouped.get_group(g) for g in val_groups])
-        train_df = pd.concat([grouped.get_group(g) for g in train_groups])
+        # Get unique patients and their most frequent brain_plane
+        patient_brain = (
+            train_df.groupby("patient_id")["brain_plane"]
+            .agg(lambda x: x.value_counts().idxmax())
+            .reset_index()
+        )
+
+        # Stratified split by brain_plane at patient level
+        splitter = StratifiedShuffleSplit(
+            n_splits=1, test_size=self.val_size, random_state=self.seed
+        )
+        train_idx, val_idx = next(
+            splitter.split(patient_brain["patient_id"], patient_brain["brain_plane"])
+        )
+        train_patients = set(patient_brain.loc[train_idx, "patient_id"])
+        val_patients = set(patient_brain.loc[val_idx, "patient_id"])
+
+        # Assign samples to train/val based on patient_id
+        train_split_df = train_df[train_df["patient_id"].isin(train_patients)]
+        val_split_df = train_df[train_df["patient_id"].isin(val_patients)]
 
         # Save the new train and validation sets
-        train_df.to_csv(self.train_csv, index=False)
-        val_df.to_csv(self.val_csv, index=False)
+        train_split_df.to_csv(self.train_csv, index=False)
+        val_split_df.to_csv(self.val_csv, index=False)
 
         print(f"✅ Split train/val completed and saved in {self.val_csv.parent}")
