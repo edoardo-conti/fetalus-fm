@@ -1,0 +1,43 @@
+dino:
+  head_bottleneck_dim: 256 #vits: 256, vitl: 384 
+  head_n_prototypes: 131072
+  head_hidden_dim: 3072 # vitb ( 4 * 768 = 3072 )
+ibot:
+  separate_head: true
+  head_n_prototypes: 131072
+  head_hidden_dim: 3072 # vitb ( 4 * 768 = 3072 )
+
+data_transform: "default"
+
+train:
+  batch_size_per_gpu: 32 
+  dataset_path: FetalUS:split=TRAIN:root=/leonardo_scratch/fast/IscrC_FoSAM-X/datasets/UNSUPERVISED:extra=/leonardo_scratch/fast/IscrC_FoSAM-X/datasets/UNSUPERVISED/extra
+  centering: sinkhorn_knopp # or "centering"
+  OFFICIAL_EPOCH_LENGTH: 500 
+  num_register_tokens: 0  # 0 for no register tokens
+  cache_dataset: true
+
+student:
+  arch: vit_base
+  patch_size: 14
+  drop_path_rate: 0.4
+  ffn_layer: "mlp" # "mlp", "swiglu", "swiglufused" or "identity"
+  block_chunks: 0  # for distributed training
+teacher:
+  momentum_teacher: 0.994
+
+optim:
+  epochs: 100
+  weight_decay_end: 0.2
+  base_lr: 2.0e-04  # lr = base_lr * sqrt( (batch_size_per_gpu × num_gpus) / 1024 ) [1.0e-03 se TARGET LR = 2.0e-04]
+  min_lr: 1.0e-06
+  warmup_epochs: 20
+  layerwise_decay: 1.0
+
+crops:
+  global_crops_size: 518
+  local_crops_number: 8
+  local_crops_size: 98
+
+evaluation:
+  eval_period_iterations: 5000

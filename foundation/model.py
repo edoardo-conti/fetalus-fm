@@ -1,16 +1,29 @@
 import torch
 import torch.nn as nn
 import ssl
-
 from functools import partial
 from collections import OrderedDict
-from torchinfo import summary
-from utils import IMAGE_SIZE
-
 from configs.dinov2_backbone_cfg import model as model_dict
 
+
 class LinearClassifierToken(torch.nn.Module):
-    def __init__(self, in_channels, nc=1, tokenW=32, tokenH=32):
+    """
+    A linear classifier module that operates on tokenized input features.
+    This module applies a 1x1 convolution to classify tokenized input features into `nc` classes.
+    The input is expected to be in a flattened form which is reshaped to (batch_size, in_channels, H, W)
+    before applying the convolution.
+    Args:
+        in_channels (int): Number of input channels/features per token.
+        nc (int, optional): Number of output classes. Defaults to 1.
+        tokenW (int, optional): Width of each token. Defaults to 46.
+        tokenH (int, optional): Height of each token. Defaults to 46.
+    Forward Args:
+        x (torch.Tensor): Input tensor of shape (batch_size, num_tokens, in_channels) 
+                          or similar that can be reshaped to (batch_size, in_channels, H, W).
+    Returns:
+        torch.Tensor: Output tensor of shape (batch_size, nc, H, W) after applying 1x1 convolution.
+    """
+    def __init__(self, in_channels, nc=1, tokenW=46, tokenH=46):
         super(LinearClassifierToken, self).__init__()
         self.in_channels = in_channels
         self.W = tokenW
@@ -25,52 +38,112 @@ class LinearClassifierToken(torch.nn.Module):
         return outputs
 
 
-class Dinov2Segmentation(nn.Module):
-    def __init__(self, nc, backbone="small", fine_tune=False, device="cpu"):
-        super(Dinov2Segmentation, self).__init__()
-        
-        self.backbone_model = self._load_backbone(backbone_size=backbone, device=device)
-        
-        if fine_tune:
-            for name, param in self.backbone_model.named_parameters():
-                param.requires_grad = True
-        else:
-            for name, param in self.backbone_model.named_parameters():
-                param.requires_grad = False
+class DINOSegmentator(nn.Module):
+    """
+    A PyTorch module for segmentation using DINO as a backbone.
+    This module combines the DINO vision transformer backbone with a linear classifier
+    head for segmentation tasks. The backbone can be fine-tuned or kept frozen during training.
+        nc (int): Number of classes for the segmentation task.
+        config (dict): Configuration dictionary containing:
+            - backbone_size (str): Size of DINO backbone ('small', 'base', 'large', or 'giant')
+            - intermediate_layers (list): List of layer indices to extract features from
+        image_size (tuple): Input image size (height, width). Default: (644, 644)
+        fine_tune (bool): Whether to fine-tune the backbone. Default: False
+        device (str): Device to run the model on ('cpu', 'cuda', etc.). Default: 'cpu'
+    Methods:
+        load_backbone(backbone_size, int_layers, device):
+            Loads and configures the DINO backbone model.
+                backbone_size (str): Size of backbone model
+                int_layers (list): Intermediate layers to extract features from
+                device (str): Device to load model on
+                torch.nn.Module: Configured backbone model
+        forward(x):
+            Forward pass through the model.
+                x (torch.Tensor): Input tensor
+                torch.Tensor: Segmentation output
+    The model architecture consists of:
+    1. DINO backbone (with configurable size and feature extraction layers)
+    2. Linear classifier head for segmentation
+    """
+    def __init__(self, nc, config, image_size=(644,644), fine_tune=False, device="cpu"):
+        super(DINOSegmentator, self).__init__()
 
-        self.decode_head = LinearClassifierToken(in_channels=1536, nc=nc, tokenW=46, tokenH=46)
+        # Load the DINOv2 backbone model based on the configuration
+        self.backbone_model = self.load_backbone(dinov=config['version'],
+                                                 backbone_size=config['backbone_size'], 
+                                                 pretrained_weights=config['pretrained_weights'],
+                                                 int_layers=config['intermediate_layers'],
+                                                 device=device)
+        
+        # Set the backbone model to training mode if fine-tuning is enabled
+        for param in self.backbone_model.parameters():
+            param.requires_grad = fine_tune
+        
+        # Extract the number of channels from the backbone model and calculate token dimensions
+        patch_size = 14 if config['version'] == 'v2' else 16
+        self.channels = model_dict['decode_head']['channels']
+        self.tokenWH = image_size[0] // patch_size 
 
+        # Define the decode head for segmentation
+        self.decode_head = LinearClassifierToken(in_channels=self.channels, nc=nc, tokenW=self.tokenWH, tokenH=self.tokenWH)
+
+        # Create the model as a sequential container
         self.model = nn.Sequential(OrderedDict([
             ('backbone', self.backbone_model),
             ('decode_head', self.decode_head)
         ]))
 
-    def _load_backbone(self, backbone_size="small", device="cpu"):
-        """
-        Load the DINOv2 backbone model.
-        Args:
-            backbone_size (str): Size of the backbone model. Options are "small", "base", "large", or "giant".
-            device (str): Device to load the model on. Options are "cpu", "cuda", or "mps".
-        Returns:
-            backbone_model (torch.nn.Module): The DINOv2 backbone model.
-        """
-        
-        backbone_archs = {
-            "small": "vits14",
-            "base": "vitb14",
-            "large": "vitl14",
-            "giant": "vitg14",
-        }
-        backbone_arch = backbone_archs[backbone_size]
-        backbone_name = f"dinov2_{backbone_arch}"
+    def load_backbone(self, dinov="v2", backbone_size="small", pretrained_weights=None, int_layers=[8, 9, 10, 11], device="cpu"):    
+        if dinov != "v2":   
+            backbone_archs = {
+                "small": "dinov3_vits16",
+                "base": "dinov3_vitb16",
+                "large": "dinov3_vitl16",
+                "giant": "dinov3_vit7b16",
+            }
+            backbone_arch = backbone_archs[backbone_size]
+            
+            # Load the DINOv2 backbone model
+            fwork_path = '/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3/'
+            dinov3_weights = f"{fwork_path}/weights/{backbone_arch}_pretrain_lvd1689m-73cec8be.pth"
+            backbone_model = torch.hub.load(fwork_path, backbone_arch, source='local', weights=dinov3_weights)
 
-        ssl._create_default_https_context = ssl._create_unverified_context  # Bypass SSL verification (TODO: Remove this)
-        backbone_model = torch.hub.load(repo_or_dir="facebookresearch/dinov2", model=backbone_name)
-        
+        else:
+            backbone_archs = {
+                "small": "vits14",
+                "base": "vitb14",
+                "large": "vitl14",
+                "giant": "vitg14",
+            }
+            backbone_arch = backbone_archs[backbone_size]
+            backbone_name = f"dinov2_{backbone_arch}"
+            
+            # Bypass SSL verification (TODO: Remove this)
+            ssl._create_default_https_context = ssl._create_unverified_context  
+            
+            # Load the DINOv2 backbone model
+            backbone_model = torch.hub.load(repo_or_dir="facebookresearch/dinov2", model=backbone_name)
+            
+            if pretrained_weights:
+                checkpoint = torch.load(pretrained_weights, weights_only=False, map_location=device)
+
+                # Extract student backbone weights
+                student_weights = {}
+                for key, value in checkpoint["model"].items():
+                    if key.startswith("student.backbone."):
+                        new_key = key[17:]  # Remove "student.backbone." prefix
+                        student_weights[new_key] = value
+
+                missing_keys, unexpected_keys = backbone_model.load_state_dict(student_weights, strict=False)
+                print(f"[DEBUG] Missing keys: {missing_keys}")
+                print(f"[DEBUG] Unexpected keys: {unexpected_keys}")
+                
+                print(f"Loaded DINOv2 {backbone_arch} backbone from local weights: {pretrained_weights}")
+                
         backbone_model = backbone_model.to(device)
         backbone_model.forward = partial(
             backbone_model.get_intermediate_layers,
-            n=model_dict['backbone']['out_indices'],
+            n=int_layers,
             reshape=True,
         )
 
@@ -82,16 +155,7 @@ class Dinov2Segmentation(nn.Module):
         # `features` is a tuple.
         concatenated_features = torch.cat(features, 1)
 
+        # Pass the concatenated features through the decode head
         classifier_out = self.decode_head(concatenated_features)
 
         return classifier_out
-    
-if __name__ == '__main__':
-    model = Dinov2Segmentation()
-    
-    summary(
-        model, 
-        (1, 3, IMAGE_SIZE[0], IMAGE_SIZE[1]),
-        col_names=('input_size', 'output_size', 'num_params'),
-        row_settings=['var_names']
-    )

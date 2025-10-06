@@ -156,10 +156,10 @@ model = dict(
     backbone=dict(type='DinoVisionTransformer', out_indices=[8, 9, 10, 11]),
     decode_head=dict(
         type='BNHead',
-        in_channels=[384, 384, 384, 384],
+        in_channels=[768, 768, 768, 768],
         in_index=[0, 1, 2, 3],
         input_transform='resize_concat',
-        channels=1536,
+        channels=3072,
         dropout_ratio=0,
         num_classes=21,
         norm_cfg=dict(type='SyncBN', requires_grad=True),
@@ -169,4 +169,4 @@ model = dict(
     test_cfg=dict(mode='slide', crop_size=(640, 640), stride=(320, 320)))
 auto_resume = True
 gpu_ids = range(0, 8)
-work_dir = '/checkpoint/dino/evaluations/segmentation/dinov2_vits14_voc2012_ms'
+work_dir = '/checkpoint/dino/evaluations/segmentation/dinov2_vitb14_voc2012_ms'

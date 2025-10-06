@@ -3,17 +3,19 @@ import torch.nn as nn
 
 from tqdm import tqdm
 from metrics import IOUEval
-from utils import draw_translucent_seg_maps
+from utils.utils import draw_translucent_seg_maps
 
 def train(
     model,
     train_dataloader,
-    device,
     optimizer,
     criterion,
-    classes_to_train
+    num_classes,
+    logger,
+    device = 'cpu',
 ):
-    print('Training')
+    logger.info('Training')
+
     model.train()
     train_running_loss = 0.0
     prog_bar = tqdm(
@@ -22,7 +24,6 @@ def train(
         bar_format='{l_bar}{bar:20}{r_bar}{bar:-20b}'
     )
     counter = 0 # to keep track of batch counter
-    num_classes = len(classes_to_train)
     iou_eval = IOUEval(num_classes)
 
     for i, data in enumerate(prog_bar):
@@ -53,29 +54,28 @@ def train(
     train_loss = train_running_loss / counter
     ##########################
     overall_acc, per_class_acc, per_class_iou, mIOU = iou_eval.getMetric()
+    
     return train_loss, overall_acc, mIOU
 
 def validate(
     model,
-    valid_dataloader,
-    device,
+    dataloader,
     criterion,
-    classes_to_train,
-    label_colors_list,
-    epoch,
-    save_dir,
-    phase = 'val'
+    num_classes,
+    logger,
+    phase = 'val',
+    device = 'cpu',
 ):
-    print('Validating' if phase == 'val' else 'Testing')
+    logger.info('Validating ...' if phase == 'val' else 'Testing ...')
+
     model.eval()
     valid_running_loss = 0.0
-    num_classes = len(classes_to_train)
     iou_eval = IOUEval(num_classes)
 
     with torch.no_grad():
         prog_bar = tqdm(
-            valid_dataloader, 
-            total=(len(valid_dataloader)), 
+            dataloader, 
+            total=(len(dataloader)), 
             bar_format='{l_bar}{bar:20}{r_bar}{bar:-20b}'
         )
         counter = 0 # To keep track of batch counter.
@@ -89,17 +89,6 @@ def validate(
                 mode="bilinear", 
                 align_corners=False
             )
-            
-            # Save the validation segmentation maps.
-            if i == 1:
-                draw_translucent_seg_maps(
-                    pixel_values, 
-                    upsampled_logits, 
-                    epoch, 
-                    i, 
-                    save_dir,
-                    label_colors_list
-                )
 
             ##### BATCH-WISE LOSS #####
             loss = criterion(upsampled_logits, target.squeeze(1))
@@ -112,4 +101,5 @@ def validate(
     valid_loss = valid_running_loss / counter
     ##########################
     overall_acc, per_class_acc, per_class_iou, mIOU = iou_eval.getMetric()
+
     return valid_loss, overall_acc, mIOU

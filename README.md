@@ -1,57 +1,86 @@
-# fetal-foundation-model
+# Fetal Ultrasound Foundation Model (FUS Foundation Model)
 
-A PyTorch-based project for working with various fetal ultrasound datasets.
+A PyTorch-based global foundation model for fetal ultrasound imaging using self-supervised DINO models for plane segmentation and related tasks.
 
-## Supported Datasets
+## Features
 
-The project currently supports the following fetal ultrasound datasets:
+- Self-supervised learning with DINOv2 and DINOv3 backbones
+- Segmentation of fetal ultrasound structures and planes
+- Support for multiple public fetal ultrasound datasets
+- Configurable experiments for multi-dataset training
+- PyTorch implementation with CUDA support
 
-- **Fetal_HC18_Z1327317**: Dataset for fetal head circumference measurement
-- **Fetal_Planes_DB_Z3904280**: Common maternal-fetal ultrasound plane images
-- **Fetal_Planes_Africa_Z7540448**: Maternal fetal US planes from low-resource imaging settings in five African countries
-- **Fetal_Abdominal_MD4GCPM9DSC3**: Dataset for fetal abdominal structures segmentation
-- **Fetal_PSFH_Z7851339**: Dataset for Pubic Symphysis and Fetal Head Segmentation (PSFHS)
+## Installation
 
-## Requirements
+Clone the repository and install dependencies:
 
-The following Python packages are required:
-- scikit-learn
-- pillow
-- torch
-- torchvision
-- matplotlib
-- seaborn
-- SimpleITK
-
-You can install the requirements using:
 ```bash
+git clone https://github.com/edoardo-conti/fetalus-fm
+cd fetalus-fm
 pip install -r requirements.txt
 ```
 
 ## Usage
 
-To use a dataset, run the main script with the path to your dataset:
+### Training
+
+Run training with specific experiment configuration:
 
 ```bash
-python main.py --dataset <path_to_dataset>
+python train.py --root /path/to/project --datasets /path/to/datasets --exp-id 0 --fine-tune
 ```
 
-Optional arguments:
-- `--reset`: Reset the project's dataset files
+**Arguments:**
+- `--root`: Path to project root (default: current directory)
+- `--datasets`: Path to datasets directory
+- `--exp-id`: Experiment ID from `configs/experiments.json` (default: 0)
+- `--fine-tune`: Fine-tune the DINO backbone
 
-## Dataset Classes
+### Dataset Loading
 
-Each dataset is implemented as a PyTorch VisionDataset with standardized interfaces:
+To load and inspect datasets:
 
-- `FetalHC18`: Head circumference measurement dataset
-- `FetalPlanesDB`: Common maternal-fetal ultrasound planes
-- `FetalPlanesAfrica`: Fetal planes from African countries
-- `FetalAbdominal`: Abdominal structures segmentation
-- `FetalPSFH`: Pubic symphysis and fetal head segmentation
+```bash
+python main.py --dataset /path/to/dataset
+```
 
-Each dataset class provides:
-- Train/test splits
-- Image loading with transforms
-- Access to targets and class labels
-- Patient ID tracking
-- Metadata handling specific to each dataset
+Options:
+- `--reset`: Reset project's dataset files and splits
+
+### Model Testing
+
+Evaluate trained models on test sets:
+
+```bash
+python model_testing.py ...
+```
+
+## Supported Datasets
+
+The project supports the following fetal ultrasound datasets:
+
+- **HC18**: Fetal head circumference measurement
+- **FABD**: Fetal abdominal structures segmentation
+- **FPDB**: Fetal Planes Database (common maternal-fetal ultrasound planes)
+- **IPSFH**: Pubic Symphysis and Fetal Head Segmentation
+- **ACSLC**: ACOUSLIC Fetal Echocardiography
+
+Datasets are automatically processed and split into train/validation/test sets with patient-level holdout.
+
+## DINO Weights
+
+Pre-trained DINOv2 weights are included in `dinov2_weights/`. DINOv3 requires external download or training.
+
+## Project Structure
+
+- `datasets/`: Dataset loading and processing classes
+- `foundation/`: Core model architecture and DINO segmentator
+- `dinov2/` & `dinov3/`: DINO model implementations
+- `utils/`: Utility functions for data handling and analysis
+- `configs/`: Experiment configurations
+- `outputs/`: Training outputs, logs, and metrics
+- `testing_preds/`: Model predictions on test sets
+
+## License
+
+Licensed under the terms in the LICENSE file.

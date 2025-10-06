@@ -1,12 +1,17 @@
 [
     {
         "dino": {
-            "backbone": "small"
+            "version": "v3",
+            "backbone_size": "base",
+            "pretrained_weights": "",
+            "intermediate_layers": [2, 5, 8, 11]
         },
-        "datasets": ["hc18", "abdominal", "planesdb", "psfh", "planesafrica"],
-        "epochs": 70,
+        "datasets": ["HC18", "FABD", "FPDB", "IPSFH", "ACSLC"],
+        "image_size": [224, 224],
+        "loss": "CEDICE",
+        "epochs": 100,
         "batch_size": 16, 
-        "lr": 1e-4,
-        "weight_decay": 1e-4
+        "lr": 1e-3,
+        "weight_decay": 1e-2
     }
 ]

@@ -164,10 +164,21 @@ cython_debug/
 ########################################################################################################
 .DS_Store
 
+# virtual environments
+.fusdino_venv/
+.my_dinov2_env/
+.my_dinov3_env/
+
 # directories
 data_csv/
 outputs/
 test/
+dinov2_out/
+dinov3_out/
+dinov2_pca_brain_analysis/
+dinov3_pca_brain_analysis/
+testing_preds/
+__pycache__/
 
 # notebooks
 *.ipynb
@@ -177,3 +188,10 @@ eda/*.csv
 
 # backup files
 *.bak
+
+# weights
+*.pth
+
+# others
+*.txt
+*.pyc

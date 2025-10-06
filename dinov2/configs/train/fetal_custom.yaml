@@ -1,0 +1,98 @@
+# base config: dinov2/configs/train/vitl14.yaml
+# compute_precision:
+#   grad_scaler: true
+#   teacher:
+#     backbone:
+#       sharding_strategy: SHARD_GRAD_OP
+#       mixed_precision:
+#         param_dtype: fp16
+#         reduce_dtype: fp16
+#         buffer_dtype: fp32
+#     dino_head:
+#       sharding_strategy: SHARD_GRAD_OP
+#       mixed_precision:
+#         param_dtype: fp16
+#         reduce_dtype: fp16
+#         buffer_dtype: fp32
+#     ibot_head:
+#       sharding_strategy: SHARD_GRAD_OP
+#       mixed_precision:
+#         param_dtype: fp16
+#         reduce_dtype: fp16
+#         buffer_dtype: fp32
+#   student:
+#     backbone:
+#       sharding_strategy: SHARD_GRAD_OP
+#       mixed_precision:
+#         param_dtype: fp16
+#         reduce_dtype: fp16
+#         buffer_dtype: fp32
+#     dino_head:
+#       sharding_strategy: SHARD_GRAD_OP
+#       mixed_precision:
+#         param_dtype: fp16
+#         reduce_dtype: fp32
+#         buffer_dtype: fp32
+#     ibot_head:
+#       sharding_strategy: SHARD_GRAD_OP
+#       mixed_precision:
+#         param_dtype: fp16
+#         reduce_dtype: fp32
+#         buffer_dtype: fp32
+
+MODEL:
+  WEIGHTS: '/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov2_out/train_290725_VITB14_224_SWIGLUFUSED/model_0068999.rank_0.pth'
+
+# MODEL:
+#   CWEIGHTS: '/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov2_weights/dinov2_vitb14_pretrain.pth'
+
+dino:
+  head_bottleneck_dim: 256 #vits: 256, vitl: 384 
+  # smooth_rank_loss_weight: 0.0 #doesnt help
+  #head_n_prototypes: 131072
+  head_hidden_dim: 3072 # vitb
+ibot:
+  separate_head: true
+  #head_n_prototypes: 131072
+  head_hidden_dim: 3072 # vitb
+
+data_transform: "default"
+
+train:
+  batch_size_per_gpu: 32 
+  dataset_path: FetalUS:split=TRAIN:root=/leonardo_scratch/fast/IscrC_FoSAM-X/datasets/UNSUPERVISED:extra=/leonardo_scratch/fast/IscrC_FoSAM-X/datasets/UNSUPERVISED/extra
+  centering: sinkhorn_knopp # or "centering"
+  OFFICIAL_EPOCH_LENGTH: 500 
+  num_register_tokens: 0  # 0 for no register tokens
+  cache_dataset: true
+  num_workers: 1 # 10
+
+student:
+  arch: vit_base
+  patch_size: 14
+  drop_path_rate: 0.4
+  ffn_layer: "swiglufused" # "mlp", "swiglu", "swiglufused" or "identity"
+  # pretrained_weights: '/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov2_weights/dinov2_vitb14_pretrain_custom.pth'
+  block_chunks: 0  # for distributed training
+teacher:
+  momentum_teacher: 0.994
+  # warmup_teacher_temp: 0.05 # with pretrained weights
+  # teacher_temp: 0.08 # with pretrained weights
+
+optim:
+  epochs: 200
+  # weight_decay: 0.03
+  weight_decay_end: 0.2
+  base_lr: 1.0e-03  # lr = base_lr * sqrt( (batch_size_per_gpu × num_gpus) / 1024 ) [1.0e-03 se TARGET LR = 2.0e-04]
+  min_lr: 1.0e-06
+  warmup_epochs: 30
+  layerwise_decay: 1.0
+  # freeze_last_layer_epochs: 0 # '0' with pretrained weights
+
+crops:
+  global_crops_size: 224
+  local_crops_number: 6
+  local_crops_size: 98
+
+evaluation:
+  eval_period_iterations: 4000
