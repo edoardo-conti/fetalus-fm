@@ -64,6 +64,11 @@ DATASETS_CONFIGS = {
 }
 
 
+FPDB_BRAIN_PLANES = ['TT', # trans-thalamic
+                     'TV', # trans-ventricular
+                     'TC'] # trans-cerebellum
+
+
 FUS_STRUCTS = [
     'BACKGROUND',
     'BRAIN',        # HC18, PlanesDB
@@ -238,10 +243,10 @@ def save_model(epochs, model, optimizer, criterion, out_dir, name='model'):
 
 
 def save_plots(
-    train_acc, valid_acc, 
-    train_loss, valid_loss, 
-    train_miou, valid_miou, 
-    out_dir
+    train_acc, valid_acc,
+    train_loss, valid_loss,
+    train_miou, valid_miou,
+    out_dir, task='seg'
 ):
     """
     Function to save the loss and accuracy plots to disk.
@@ -275,21 +280,26 @@ def save_plots(
     plt.ylabel('Loss')
     plt.legend()
     plt.savefig(os.path.join(out_dir, 'loss.png'))
-
-    # mIOU plots.
-    plt.figure(figsize=(10, 7))
-    plt.plot(
-        train_miou, color='tab:blue', linestyle='-', 
-        label='train mIoU'
-    )
-    plt.plot(
-        valid_miou, color='tab:red', linestyle='-', 
-        label='validataion mIoU'
-    )
-    plt.xlabel('Epochs')
-    plt.ylabel('mIoU')
-    plt.legend()
-    plt.savefig(os.path.join(out_dir, 'miou.png'))
+    
+    # Third metric plots (mIOU for seg).
+    if task == 'seg':
+        ylabel = 'mIoU'
+        label1 = 'train mIoU'
+        label2 = 'validation mIoU'
+        filename = 'miou.png'
+        plt.figure(figsize=(10, 7))
+        plt.plot(
+            train_miou, color='tab:blue', linestyle='-',
+            label=label1
+        )
+        plt.plot(
+            valid_miou, color='tab:red', linestyle='-',
+            label=label2
+        )
+        plt.xlabel('Epochs')
+        plt.ylabel(ylabel)
+        plt.legend()
+        plt.savefig(os.path.join(out_dir, filename))
 
 
 class SaveBestModel:

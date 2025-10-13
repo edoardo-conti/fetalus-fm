@@ -10,6 +10,8 @@ def get_fetalus_dataloaders(
     image_size,
     supervised=True,
     debug=False,
+    task='seg',
+    eval_augmentation=False,
 ):
     """
     Creates and returns train, validation, and test data loaders for fetal ultrasound data.
@@ -29,7 +31,7 @@ def get_fetalus_dataloaders(
         - In debug mode, datasets are limited to 2 training samples and 1 sample each for val/test
     """
     # Data augmentation trasformations
-    geometric_augs = geometric_transforms(image_size=image_size)
+    geometric_augs = geometric_transforms(image_size, task=task)
     color_augs = color_transforms()
 
     # Create UnifiedFetalDataset instances for train, val, and test splits
@@ -41,6 +43,7 @@ def get_fetalus_dataloaders(
         supervised=supervised,
         target_size=image_size,
         augmentations=(geometric_augs, color_augs),
+        task=task,
     )
     fus_val = UnifiedFetalDataset(
         root=root,
@@ -49,6 +52,8 @@ def get_fetalus_dataloaders(
         split='val',
         supervised=supervised,
         target_size=image_size,
+        task=task,
+        eval_augmentation=eval_augmentation,
     )
     fus_test = UnifiedFetalDataset(
         root=root,
@@ -57,6 +62,8 @@ def get_fetalus_dataloaders(
         split='test',
         supervised=supervised,
         target_size=image_size,
+        task=task,
+        eval_augmentation=eval_augmentation,
     )
     
     # If debug mode, limit the datasets to a small number of samples

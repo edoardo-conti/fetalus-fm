@@ -3,15 +3,18 @@
         "dino": {
             "version": "v3",
             "backbone_size": "base",
-            "pretrained_weights": "",
-            "intermediate_layers": [2, 5, 8, 11]
+            "pretrained_weights": "/Users/edoardoconti/PhD/projects/fetalUS_FM/dinov3_weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth",
+            "intermediate_layers": [7, 9, 10, 11],
+            "use_cls_token": false
         },
-        "datasets": ["HC18", "FABD", "FPDB", "IPSFH", "ACSLC"],
+        "datasets": ["FPDB"],
         "image_size": [224, 224],
-        "loss": "CEDICE",
+        "loss": "CE",
         "epochs": 100,
         "batch_size": 16, 
-        "lr": 1e-3,
+        "lr": 1e-2,
+        "lr_scheduler": "cosine", 
+        "early_stop_patience": 10,
         "weight_decay": 1e-2
     }
 ]

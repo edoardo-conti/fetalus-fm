@@ -10,3 +10,5 @@ albumentations
 scikit-learn
 SimpleITK
 rich
+torchmetrics
+termcolor

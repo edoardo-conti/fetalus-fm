@@ -11,7 +11,8 @@ from torchvision.datasets import VisionDataset
 
 # from utils import get_label_mask, ALL_CLASSES, LABEL_COLORS_LIST
 
-from utils.utils import DATASETS_CONFIGS, FUS_STRUCTS, FUS_STRUCTS_COLORS
+from utils.utils import DATASETS_CONFIGS, FUS_STRUCTS, FUS_STRUCTS_COLORS, FPDB_BRAIN_PLANES
+from augmentations import get_cls_augmentations, get_val_augmentations
 
 class UnifiedFetalDataset(VisionDataset):
     """Dataset unificato per immagini ecografiche fetali con maschere multi-struttura"""
@@ -24,6 +25,8 @@ class UnifiedFetalDataset(VisionDataset):
         supervised: bool = True,
         target_size: Tuple[int, int] = (644, 644),
         augmentations: Tuple[callable, callable] = None,
+        task: str = 'seg',
+        eval_augmentation: bool = False,
         transform: callable = None
     ):
         """
@@ -33,10 +36,11 @@ class UnifiedFetalDataset(VisionDataset):
             datasets: Lista di dataset da includere (es. ['hc18', 'abdominal'])
             split: Split del dataset ('train'/'test'/'val')
             target_size: Dimensione target per resize
+            supervised: Se usare supervision (maschere per seg)
+            augmentations: Tuple (geometric_augs, color_augs) per train set
+            task: 'seg' o 'cls' per il tipo di task
+            eval_augmentation: Se applicare augmentations anche su val/test (default False)
             transform: Trasformazioni torchvision da applicare
-            augmentation: Trasformazioni albumentations per data augmentation
-            label_colors_list: Lista colori per le classi
-            all_classes: Lista di tutte le classi
         """
         super().__init__(root, transform=transform)
         
@@ -47,8 +51,22 @@ class UnifiedFetalDataset(VisionDataset):
         self.target_size = target_size
         self.split = split
         self.supervised = supervised
+        self.task = task
+        self.eval_augmentation = eval_augmentation
         self.geometric_augs = augmentations[0] if augmentations else None
         self.color_augs = augmentations[1] if augmentations else None
+
+        # For classification, use integrated augmentation pipeline
+        if self.task == 'cls':
+            self.cls_augmentations = get_cls_augmentations(self.target_size)
+            if self.eval_augmentation:
+                self.val_augmentations = get_cls_augmentations(self.target_size)
+            else:
+                self.val_augmentations = None
+        else:
+            self.cls_augmentations = None
+            self.val_augmentations = None
+
         self.class_values = list(range(1, len(FUS_STRUCTS)))
         self.samples = []
         self.dataframes = []
@@ -65,6 +83,10 @@ class UnifiedFetalDataset(VisionDataset):
 
             # filtraggio dei dati per supervised training
             df = self._filter_supervised_data(df, ds_name, cfg)
+
+            # Filter for classification task on FPDB - only Brain class
+            if self.task == 'cls' and ds_name == 'FPDB':
+                df = df[df['class'] == 'Brain']
             
             df['dataset'] = ds_name
             self.dataframes.append(df)
@@ -85,31 +107,51 @@ class UnifiedFetalDataset(VisionDataset):
         image = cv2.resize(image, self.target_size)
         mask = cv2.resize(mask, self.target_size, interpolation=cv2.INTER_NEAREST)
         
-        # Data augmentation
-        if self.split == 'train' and (self.geometric_augs and self.color_augs):
-            if self.supervised:
-                # trasformazioni geometriche sincronizzate
-                augmented = self.geometric_augs(image=image, mask=mask)
-                image, mask = augmented['image'], augmented['mask']
-                
-                # trasformazioni di colore solo all'immagine
-                image = self.color_augs(image=image)['image']
-            else:
-                image = self.geometric_augs(image=image)['image']
-                image = self.color_augs(image=image)['image']
-        
+        # Data augmentation - Unified approach for both tasks
+        if self.split == 'train' or (self.eval_augmentation and self.split in ['val', 'test']):
+            if self.task == 'cls':
+                # For classification: comprehensive augmentation on images only
+                aug_pipeline = self.cls_augmentations if self.split == 'train' else self.val_augmentations
+                if aug_pipeline:
+                    augmented = aug_pipeline(image=image)
+                    image = augmented['image']
+            else:  # segmentation
+                # For segmentation: separate geometric + color, synchronized with masks
+                if self.supervised and self.geometric_augs and self.color_augs:
+                    # trasformazioni geometriche sincronizzate
+                    augmented = self.geometric_augs(image=image, mask=mask)
+                    image, mask = augmented['image'], augmented['mask']
+
+                    # trasformazioni di colore solo all'immagine
+                    image = self.color_augs(image=image)['image']
+
         # image processing
         image = image.transpose(2, 0, 1)
-        image = torch.tensor(image).float() / 255.0 
-        
-        if not self.supervised:
-            return image
-        
-        # Supervised-only mask processing
-        encoded_mask = self.label_mask(mask, ds_name, self.class_values)
-        encoded_mask = torch.tensor(encoded_mask).long()
-        
-        return image, encoded_mask
+        image = torch.tensor(image).float() / 255.0
+
+        if self.task == 'cls':
+            if ds_name == 'FPDB':
+                brain_plane = row['brain_plane']
+                name_to_abbrev = {
+                    'Trans-thalamic': 'TT',
+                    'Trans-ventricular': 'TV',
+                    'Trans-cerebellum': 'TC'
+                }
+                abbrev = name_to_abbrev.get(brain_plane, 'TT')
+                class_idx = FPDB_BRAIN_PLANES.index(abbrev)
+            else:
+                class_str = row['class']
+                class_idx = FUS_STRUCTS.index(class_str.upper()) if class_str.upper() in FUS_STRUCTS else 0
+            return image, class_idx
+        else:
+            if not self.supervised:
+                return image
+
+            # Supervised-only mask processing
+            encoded_mask = self.label_mask(mask, ds_name, self.class_values)
+            encoded_mask = torch.tensor(encoded_mask).long()
+
+            return image, encoded_mask
     
     def _filter_supervised_data(self, df: pd.DataFrame, ds_name: str, cfg: dict) -> pd.DataFrame:
         """Filter dataframe for supervised training based on mask availability and dataset requirements"""
