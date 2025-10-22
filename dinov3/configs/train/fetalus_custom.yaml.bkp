@@ -35,20 +35,19 @@ ibot:
   head_nlayers: 3
   head_hidden_dim: 2048
 train:
-  batch_size_per_gpu: 16
+  batch_size_per_gpu: 128
   dataset_path: FetalUS:split=TRAIN:root=/leonardo_scratch/fast/IscrC_FoSAM-X/datasets/UNSUPERVISED:extra=/leonardo_scratch/fast/IscrC_FoSAM-X/datasets/UNSUPERVISED/extra
-  #output_dir: /checkpoint/dino/qas/rope/vitl16_im1k
   saveckp_freq: 20
   seed: 0
-  num_workers: 1
-  OFFICIAL_EPOCH_LENGTH: 1250
+  num_workers: 4
+  OFFICIAL_EPOCH_LENGTH: 506 # default: 1250
   monitor_gradient_norm: false
   chunk_schedule: []
   cache_dataset: true
   use_teacher_head: true
   learn_from_teacher_tokens: false
   centering: sinkhorn_knopp
-  checkpointing: false
+  checkpointing: true
   compile: true
   cudagraphs: false
   cell_augmentation: false
@@ -98,7 +97,7 @@ hrft:
   enabled: false
   checkpoint_path: ''
 optim:
-  epochs: 100
+  epochs: 50 # default: 100 
   optimizer: adamw
   weight_decay: 0.04
   weight_decay_end: 0.4
@@ -117,19 +116,19 @@ optim:
   adamw_beta2: 0.999
 crops:
   global_crops_scale:
-  - 0.32
+  - 0.5   # default: 0.32
   - 1.0
   local_crops_number: 8
   local_crops_scale:
-  - 0.05
-  - 0.32
+  - 0.15  # default: 0.05
+  - 0.5   # default: 0.32
   global_crops_size: 224
   local_crops_size: 96
   localcrops_subset_of_globalcrops: false
   share_color_jitter: false
   horizontal_flips: true
 evaluation:
-  eval_period_iterations: 12500
+  eval_period_iterations: 5060 # 12500
   low_freq_every: 5
   config_files:
     high_freq: benchmark_high_frequency.yaml

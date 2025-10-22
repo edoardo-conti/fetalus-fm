@@ -53,8 +53,21 @@ class UnifiedFetalDataset(VisionDataset):
         self.supervised = supervised
         self.task = task
         self.eval_augmentation = eval_augmentation
-        self.geometric_augs = augmentations[0] if augmentations else None
-        self.color_augs = augmentations[1] if augmentations else None
+        # Handle different augmentation formats
+        if augmentations is None:
+            self.geometric_augs = None
+            self.color_augs = None
+            self.combined_transform = None
+        elif hasattr(augmentations, '__call__') and not isinstance(augmentations, (tuple, list)):
+            # Single transform object (like CombinedTransform)
+            self.geometric_augs = None
+            self.color_augs = None
+            self.combined_transform = augmentations
+        else:
+            # Tuple/list of separate transforms (legacy segmentation format)
+            self.geometric_augs = augmentations[0] if len(augmentations) > 0 else None
+            self.color_augs = augmentations[1] if len(augmentations) > 1 else None
+            self.combined_transform = None
 
         # For classification, use integrated augmentation pipeline
         if self.task == 'cls':
@@ -108,26 +121,40 @@ class UnifiedFetalDataset(VisionDataset):
         mask = cv2.resize(mask, self.target_size, interpolation=cv2.INTER_NEAREST)
         
         # Data augmentation - Unified approach for both tasks
-        if self.split == 'train' or (self.eval_augmentation and self.split in ['val', 'test']):
-            if self.task == 'cls':
-                # For classification: comprehensive augmentation on images only
-                aug_pipeline = self.cls_augmentations if self.split == 'train' else self.val_augmentations
-                if aug_pipeline:
-                    augmented = aug_pipeline(image=image)
+        if self.task == 'cls':
+            # For classification, apply ImageNet normalization to all splits (train/val/test)
+            if self.combined_transform is not None:
+                augmented = self.combined_transform(image=image)
+                image = augmented['image']
+        else:  # segmentation
+            if self.split == 'train' or (self.eval_augmentation and self.split in ['val', 'test']):
+                if self.combined_transform is not None:
+                    # Use combined transform (includes Albumentations + ImageNet normalization)
+                    augmented = self.combined_transform(image=image, mask=mask)
                     image = augmented['image']
-            else:  # segmentation
-                # For segmentation: separate geometric + color, synchronized with masks
-                if self.supervised and self.geometric_augs and self.color_augs:
-                    # trasformazioni geometriche sincronizzate
-                    augmented = self.geometric_augs(image=image, mask=mask)
-                    image, mask = augmented['image'], augmented['mask']
+                    if 'mask' in augmented:
+                        mask = augmented['mask']
+                elif self.task == 'seg':  # legacy segmentation
+                    # Legacy segmentation: separate geometric + color, synchronized with masks
+                    if self.supervised and self.geometric_augs and self.color_augs:
+                        # trasformazioni geometriche sincronizzate
+                        augmented = self.geometric_augs(image=image, mask=mask)
+                        image, mask = augmented['image'], augmented['mask']
 
-                    # trasformazioni di colore solo all'immagine
-                    image = self.color_augs(image=image)['image']
+                        # trasformazioni di colore solo all'immagine
+                        image = self.color_augs(image=image)['image']
 
-        # image processing
-        image = image.transpose(2, 0, 1)
-        image = torch.tensor(image).float() / 255.0
+        # image processing - handle both numpy arrays and tensors
+        if isinstance(image, torch.Tensor):
+            # ImageNet normalized tensor from CombinedTransform
+            if image.dim() == 3 and image.shape[0] == 3:  # CHW format
+                pass  # already in correct format
+            elif image.dim() == 3 and image.shape[-1] == 3:  # HWC format
+                image = image.permute(2, 0, 1)  # HWC to CHW
+        else:
+            # Traditional numpy array processing
+            image = image.transpose(2, 0, 1)
+            image = torch.tensor(image).float() / 255.0
 
         if self.task == 'cls':
             if ds_name == 'FPDB':

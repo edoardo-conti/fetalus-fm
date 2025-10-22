@@ -4,8 +4,151 @@ import ssl
 from functools import partial
 from collections import OrderedDict
 from configs.dinov2_backbone_cfg import model as model_dict
+from typing import Optional
 
 ssl._create_default_https_context = ssl._create_unverified_context
+
+
+class FocalLoss(nn.Module):
+    """
+    Reduces the loss contribution from easy examples and increases the importance of hard examples.
+    Particularly effective for imbalanced datasets and when there are many easy negatives.
+    """
+    def __init__(self, alpha: float = 1.0, gamma: float = 2.0, reduction: str = 'mean', ignore_index: int = -100):
+        """
+        Args:
+            alpha: Weighting factor for the rare class (between 0 and 1)
+            gamma: Focusing parameter (typically 1.0 to 5.0)
+            reduction: 'none', 'mean', or 'sum'
+            ignore_index: Class index to ignore in loss computation
+        """
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+        self.ignore_index = ignore_index
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """
+        Compute Focal Loss.
+
+        Args:
+            inputs: Predictions (N, C) where C is number of classes
+            targets: Ground truth labels (N,)
+
+        Returns:
+            Focal loss value
+        """
+        # Compute cross entropy loss
+        ce_loss = nn.functional.cross_entropy(inputs, targets, reduction='none', ignore_index=self.ignore_index)
+
+        # Compute focal loss modulation factor
+        pt = torch.exp(-ce_loss)
+
+        # Apply focal loss formula: FL = -alpha * (1-pt)^gamma * log(pt)
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
+
+        # Apply reduction
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
+
+
+class LabelSmoothingCrossEntropy(nn.Module):
+    """
+    Label Smoothing Cross Entropy Loss
+    Helps prevent overfitting by adding noise to target labels.
+    """
+    def __init__(self, smoothing: float = 0.1, reduction: str = 'mean'):
+        super(LabelSmoothingCrossEntropy, self).__init__()
+        self.smoothing = smoothing
+        self.reduction = reduction
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        confidence = 1. - self.smoothing
+        log_probs = nn.functional.log_softmax(inputs, dim=-1)
+        nll_loss = -log_probs.gather(dim=-1, index=targets.unsqueeze(1)).squeeze(1)
+        smooth_loss = -log_probs.mean(dim=-1)
+        loss = confidence * nll_loss + self.smoothing * smooth_loss
+
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        else:
+            return loss
+
+
+def scale_lr(learning_rates, batch_size):
+    """Scale learning rates based on batch size following linear evaluation practices."""
+    return learning_rates * (batch_size * torch.cuda.device_count() if torch.cuda.is_available() else batch_size) / 256.0
+
+
+def create_multiple_classifiers(sample_output, n_last_blocks_list, learning_rates, batch_size, num_classes=1000, loss_types=None):
+    """
+    Create multiple linear classifiers with different configurations for comprehensive grid search.
+    Tests different architectures, learning rates, and loss functions.
+    Inspired by DINOv3 linear evaluation approach.
+    """
+    if loss_types is None:
+        loss_types = ['ce']  # Default to cross entropy only
+
+    classifiers_dict = nn.ModuleDict()
+    optim_param_groups = []
+    loss_functions = {}
+
+    for n_blocks in n_last_blocks_list:
+        # Always use avgpool=True for better performance
+        for avgpool in [True]:
+            for cls_token in [True, False]:  # Test both CLS token and global average
+                for _lr in learning_rates:
+                    lr = scale_lr(_lr, batch_size)
+                    for loss_type in loss_types:
+                        out_dim = create_linear_input(sample_output, use_n_blocks=n_blocks, use_avgpool=avgpool, use_cls=cls_token).shape[1]
+
+                        classifier = LinearClassifier(
+                            out_dim=out_dim,
+                            use_n_blocks=n_blocks,
+                            use_avgpool=avgpool,
+                            num_classes=num_classes,
+                            use_cls=cls_token
+                        )
+
+                        classifier_name = f"classifier_{n_blocks}_blocks_cls_{cls_token}_avgpool_{avgpool}_lr_{lr:.5f}_loss_{loss_type}".replace(".", "_")
+                        classifiers_dict[classifier_name] = classifier
+                        optim_param_groups.append({"params": classifier.parameters(), "lr": lr})
+
+                        # Store loss function configuration for this classifier
+                        if loss_type == 'ce':
+                            loss_functions[classifier_name] = nn.CrossEntropyLoss()
+                        elif loss_type == 'focal':
+                            loss_functions[classifier_name] = FocalLoss(alpha=1.0, gamma=2.0)
+                        elif loss_type == 'focal_g1':
+                            loss_functions[classifier_name] = FocalLoss(alpha=1.0, gamma=1.0)
+                        elif loss_type == 'focal_g3':
+                            loss_functions[classifier_name] = FocalLoss(alpha=1.0, gamma=3.0)
+                        elif loss_type == 'label_smooth':
+                            loss_functions[classifier_name] = LabelSmoothingCrossEntropy(smoothing=0.1)
+
+    classifiers = AllClassifiers(classifiers_dict)
+    return classifiers, optim_param_groups, loss_functions
+
+
+class AllClassifiers(nn.Module):
+    """Container for multiple classifiers similar to DINOv3 linear eval."""
+    def __init__(self, classifiers_dict):
+        super().__init__()
+        self.classifiers_dict = nn.ModuleDict()
+        self.classifiers_dict.update(classifiers_dict)
+
+    def forward(self, inputs):
+        return {k: v.forward(inputs) for k, v in self.classifiers_dict.items()}
+
+    def __len__(self):
+        return len(self.classifiers_dict)
 
 
 def create_linear_input(x_tokens_list, use_n_blocks, use_avgpool, use_cls=False):
@@ -133,8 +276,8 @@ class DINOSegmentator(nn.Module):
             ('decode_head', self.decode_head)
         ]))
 
-    def load_backbone(self, dinov="v2", backbone_size="small", pretrained_weights=None, int_layers=[8, 9, 10, 11], device="cpu"):    
-        if dinov != "v2":   
+    def load_backbone(self, dinov="v2", backbone_size="small", pretrained_weights=None, int_layers=[8, 9, 10, 11], device="cpu"):
+        if dinov != "v2":
             backbone_archs = {
                 "small": "dinov3_vits16",
                 "base": "dinov3_vitb16",
@@ -142,12 +285,31 @@ class DINOSegmentator(nn.Module):
                 "giant": "dinov3_vit7b16",
             }
             backbone_arch = backbone_archs[backbone_size]
-            
-            # Load the DINOv2 backbone model
-            fwork_path = '/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3/'
-            dinov3_weights = f"{fwork_path}/weights/{backbone_arch}_pretrain_lvd1689m-73cec8be.pth"
-            backbone_model = torch.hub.load(fwork_path, backbone_arch, source='local', weights=dinov3_weights)
 
+            # Load the DINOv3 backbone model
+            fwork_path = '/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3/'
+            backbone_model = torch.hub.load(fwork_path, backbone_arch, source='local', pretrained=False)
+
+            if pretrained_weights:
+                checkpoint = torch.load(pretrained_weights, weights_only=False, map_location=device)
+
+                # Extract teacher backbone weights if nested under 'teacher' -> 'backbone.'
+                teacher_weights = {}
+                if isinstance(checkpoint, dict) and 'teacher' in checkpoint:
+                    full_teacher = checkpoint['teacher']
+                    for key, value in full_teacher.items():
+                        if key.startswith('backbone.'):
+                            new_key = key[9:]  # Remove 'backbone.' prefix
+                            teacher_weights[new_key] = value
+                else:
+                    # Fallback: assume checkpoint is direct backbone weights
+                    teacher_weights = checkpoint
+
+                missing_keys, unexpected_keys = backbone_model.load_state_dict(teacher_weights, strict=False)
+                print(f"[DEBUG] DINOv3 Missing keys: {missing_keys}")
+                print(f"[DEBUG] DINOv3 Unexpected keys: {unexpected_keys}")
+                print(f"Loaded DINOv3 {backbone_arch} backbone from local weights: {pretrained_weights}")
+            
         else:
             backbone_archs = {
                 "small": "vits14",
@@ -262,8 +424,8 @@ class DINOClassifier(nn.Module):
             ('decode_head', self.decode_head)
         ]))
 
-    def load_backbone(self, dinov="v2", backbone_size="small", pretrained_weights=None, int_layers=[8, 9, 10, 11], device="cpu"):    
-        if dinov != "v2":   
+    def load_backbone(self, dinov="v2", backbone_size="small", pretrained_weights=None, int_layers=[8, 9, 10, 11], device="cpu"):
+        if dinov != "v2":
             backbone_archs = {
                 "small": "dinov3_vits16",
                 "base": "dinov3_vitb16",
@@ -271,11 +433,37 @@ class DINOClassifier(nn.Module):
                 "giant": "dinov3_vit7b16",
             }
             backbone_arch = backbone_archs[backbone_size]
-
+            
             # Load the DINOv3 backbone model
-            dinov3_repo_path = '/Users/edoardoconti/PhD/projects/fetalUS_FM/dinov3'
-            # pretrained_weights = "/Users/edoardoconti/PhD/projects/fetalUS_FM/dinov3_weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth"
-            backbone_model = torch.hub.load(dinov3_repo_path, backbone_arch, source='local', weights=pretrained_weights)
+            dinov3_repo_path = 'fetalus-fm/dinov3'
+            # Select pretrained weights based on backbone size
+            if backbone_size == "large":
+                dinov3_pretw = "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth"
+            elif backbone_size == "base":
+                dinov3_pretw = "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth"
+            else:
+                raise ValueError(f"Unsupported backbone size for DINOv3: {backbone_size}")
+            backbone_model = torch.hub.load(dinov3_repo_path, backbone_arch, source='local', weights=dinov3_pretw)
+
+            if pretrained_weights:
+                checkpoint = torch.load(pretrained_weights, weights_only=False, map_location=device)
+
+                # Extract teacher backbone weights if nested under 'teacher' -> 'backbone.'
+                teacher_weights = {}
+                if isinstance(checkpoint, dict) and 'teacher' in checkpoint:
+                    full_teacher = checkpoint['teacher']
+                    for key, value in full_teacher.items():
+                        if key.startswith('backbone.'):
+                            new_key = key[9:]  # Remove 'backbone.' prefix
+                            teacher_weights[new_key] = value
+                else:
+                    # Fallback: assume checkpoint is direct backbone weights
+                    teacher_weights = checkpoint
+
+                missing_keys, unexpected_keys = backbone_model.load_state_dict(teacher_weights, strict=False)
+                print(f"[DEBUG] DINOv3 Missing keys: {missing_keys}")
+                print(f"[DEBUG] DINOv3 Unexpected keys: {unexpected_keys}")
+                print(f"Loaded DINOv3 {backbone_arch} backbone from local weights: {pretrained_weights}")
 
         else:
             backbone_archs = {

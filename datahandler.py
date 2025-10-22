@@ -1,6 +1,7 @@
-from augmentations import geometric_transforms, color_transforms
+from augmentations import geometric_transforms, color_transforms, CombinedTransform, make_imagenet_transform, get_val_augmentations
 from datasets.unified import UnifiedFetalDataset
 from torch.utils.data import Subset
+import albumentations as A
 
 
 def get_fetalus_dataloaders(
@@ -30,41 +31,91 @@ def get_fetalus_dataloaders(
         - Geometric and color augmentations are only applied to the training set
         - In debug mode, datasets are limited to 2 training samples and 1 sample each for val/test
     """
-    # Data augmentation trasformations
-    geometric_augs = geometric_transforms(image_size, task=task)
-    color_augs = color_transforms()
+    if task == 'cls':
+        # For classification, use DINOv3 standard ImageNet normalization
+        imagenet_transform = make_imagenet_transform(resize_size=image_size[0])
 
-    # Create UnifiedFetalDataset instances for train, val, and test splits
-    fus_train = UnifiedFetalDataset(
-        root=root,
-        data_path=data_path,
-        datasets=datasets,
-        split='train',
-        supervised=supervised,
-        target_size=image_size,
-        augmentations=(geometric_augs, color_augs),
-        task=task,
-    )
-    fus_val = UnifiedFetalDataset(
-        root=root,
-        data_path=data_path,
-        datasets=datasets,
-        split='val',
-        supervised=supervised,
-        target_size=image_size,
-        task=task,
-        eval_augmentation=eval_augmentation,
-    )
-    fus_test = UnifiedFetalDataset(
-        root=root,
-        data_path=data_path,
-        datasets=datasets,
-        split='test',
-        supervised=supervised,
-        target_size=image_size,
-        task=task,
-        eval_augmentation=eval_augmentation,
-    )
+        # Train augmentations: geometric + color + ImageNet normalization
+        train_augs_albu = A.Compose([
+            geometric_transforms(image_size, task=task),
+            color_transforms()
+        ])
+        train_transform = CombinedTransform(train_augs_albu, imagenet_transform, task=task)
+
+        # Val/Test: minimal augmentations + ImageNet normalization
+        val_test_augs_albu = get_val_augmentations(image_size) if not eval_augmentation else A.Compose([])
+        val_transform = CombinedTransform(val_test_augs_albu, imagenet_transform, task=task)
+        test_transform = CombinedTransform(val_test_augs_albu, imagenet_transform, task=task)
+
+        # Create UnifiedFetalDataset instances with combined transforms
+        fus_train = UnifiedFetalDataset(
+            root=root,
+            data_path=data_path,
+            datasets=datasets,
+            split='train',
+            supervised=supervised,
+            target_size=image_size,
+            augmentations=train_transform,
+            task=task,
+        )
+        fus_val = UnifiedFetalDataset(
+            root=root,
+            data_path=data_path,
+            datasets=datasets,
+            split='val',
+            supervised=supervised,
+            target_size=image_size,
+            augmentations=val_transform,
+            task=task,
+            eval_augmentation=eval_augmentation,
+        )
+        fus_test = UnifiedFetalDataset(
+            root=root,
+            data_path=data_path,
+            datasets=datasets,
+            split='test',
+            supervised=supervised,
+            target_size=image_size,
+            augmentations=test_transform,
+            task=task,
+            eval_augmentation=eval_augmentation,
+        )
+
+    else:
+        # For segmentation, use traditional separate transforms
+        geometric_augs = geometric_transforms(image_size, task=task)
+        color_augs = color_transforms()
+
+        fus_train = UnifiedFetalDataset(
+            root=root,
+            data_path=data_path,
+            datasets=datasets,
+            split='train',
+            supervised=supervised,
+            target_size=image_size,
+            augmentations=(geometric_augs, color_augs),
+            task=task,
+        )
+        fus_val = UnifiedFetalDataset(
+            root=root,
+            data_path=data_path,
+            datasets=datasets,
+            split='val',
+            supervised=supervised,
+            target_size=image_size,
+            task=task,
+            eval_augmentation=eval_augmentation,
+        )
+        fus_test = UnifiedFetalDataset(
+            root=root,
+            data_path=data_path,
+            datasets=datasets,
+            split='test',
+            supervised=supervised,
+            target_size=image_size,
+            augmentations=None,  # Test uses no augmentations for segmentation
+            task=task,
+        )
     
     # If debug mode, limit the datasets to a small number of samples
     if debug:

@@ -6,6 +6,10 @@ os.environ['NO_ALBUMENTATIONS_UPDATE'] = '1'
 import albumentations as A
 import cv2
 import numpy as np
+import torch
+import torchvision
+from torchvision import transforms as T
+from torchvision.transforms import v2
 
 
 def geometric_transforms(image_size, task='seg'):
@@ -160,3 +164,67 @@ def get_val_augmentations(image_size):
         # Only center crop if needed for consistency
         A.CenterCrop(width=image_size[0], height=image_size[1]),
     ])
+
+
+def make_imagenet_transform(resize_size: int = 224):
+    """
+    DINOv3 standard ImageNet evaluation transform for pretrained models.
+    This should be applied after Albumentations transforms for proper normalization.
+
+    Args:
+        resize_size: Target size for resizing (should match model input size)
+
+    Returns:
+        torchvision Compose object with ImageNet normalization
+    """
+    return v2.Compose([
+        v2.ToImage(),  # Convert to tensor if needed
+        v2.Resize((resize_size, resize_size), antialias=True),
+        v2.ToDtype(torch.float32, scale=True),
+        v2.Normalize(
+            mean=(0.485, 0.456, 0.406),
+            std=(0.229, 0.224, 0.225),
+        )
+    ])
+
+
+class CombinedTransform:
+    """
+    Combines Albumentations transforms with PyTorch ImageNet normalization.
+    This ensures proper preprocessing for DINOv3 models pretrained on ImageNet.
+    """
+    def __init__(self, albumentations_transform, imagenet_transform=None, task='seg'):
+        """
+        Args:
+            albumentations_transform: Albumentations Compose object
+            imagenet_transform: torchvision transform for ImageNet normalization (optional)
+            task: 'seg' or 'cls' to handle masks appropriately
+        """
+        self.albumentations_transform = albumentations_transform
+        self.imagenet_transform = imagenet_transform
+        self.task = task
+
+    def __call__(self, **kwargs):
+        # Apply Albumentations transforms
+        result = self.albumentations_transform(**kwargs)
+
+        # Apply ImageNet normalization if provided (for classification with pretrained models)
+        if self.imagenet_transform is not None and 'image' in result:
+            # Convert numpy array back to PIL for torchvision transforms
+            if isinstance(result['image'], np.ndarray):
+                # Convert from numpy (H, W, C) to PIL Image
+                if result['image'].dtype != np.uint8:
+                    # Scale to 0-255 if needed
+                    img_min, img_max = result['image'].min(), result['image'].max()
+                    if img_min < 0 or img_max > 1:
+                        result['image'] = ((result['image'] - img_min) / (img_max - img_min) * 255).astype(np.uint8)
+
+                pil_image = T.ToPILImage()(result['image'])
+                # Apply ImageNet normalization
+                normalized_image = self.imagenet_transform(pil_image)
+                result['image'] = normalized_image
+
+        return result
+
+    def __repr__(self):
+        return f"CombinedTransform(albumentations={self.albumentations_transform}, imagenet={self.imagenet_transform is not None})"

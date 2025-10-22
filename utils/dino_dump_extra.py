@@ -1,3 +1,10 @@
+import sys
+import os
+
+script_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(script_dir)
+sys.path.insert(0, parent_dir)
+
 from dinov3.data.datasets import FetalUS
 
 for split in FetalUS.Split:

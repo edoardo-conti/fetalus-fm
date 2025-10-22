@@ -40,7 +40,7 @@ def get_submitit_parser():
     )
     parser.add_argument(
         "--timeout",
-        default=2800,
+        default=1380,   # in minutes, 1380 = 23 hours (1 less than max 24 hours from cineca)
         type=int,
         help="Duration of the job, default: %(default)s",
     )
@@ -164,6 +164,11 @@ def submit_jobs(class_to_submit, output_dir, submitit_args, name="fairvit"):
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     executor = submitit.AutoExecutor(folder=output_dir, slurm_max_num_timeout=30)
 
+    # Adjust timeout for Leonardo cluster to match DINOv3_TRAINING.sh
+    from dinov3.utils.cluster import get_cluster_type
+    if get_cluster_type() == "leonardo":
+        submitit_args.timeout = 60
+
     kwargs = {}
     if submitit_args.comment:
         kwargs["slurm_comment"] = submitit_args.comment
@@ -173,12 +178,12 @@ def submit_jobs(class_to_submit, output_dir, submitit_args, name="fairvit"):
     executor_params = get_slurm_executor_parameters(
         nodes=submitit_args.nodes,
         num_gpus_per_node=submitit_args.ngpus,
-        timeout_min=submitit_args.timeout,  # max is 60 * 72
-        slurm_signal_delay_s=120,
+        timeout_min=submitit_args.timeout,
+        # slurm_signal_delay_s=120,
         slurm_partition=submitit_args.slurm_partition,
-        slurm_qos=submitit_args.slurm_qos,
-        # slurm_account=submitit_args.slurm_account,
-        slurm_additional_parameters=dict(nice=submitit_args.slurm_nice),
+        # slurm_qos=submitit_args.slurm_qos,
+        slurm_account=submitit_args.slurm_account,
+        # slurm_additional_parameters=dict(nice=submitit_args.slurm_nice),
         **kwargs,
     )
     executor.update_parameters(name=name, **executor_params)

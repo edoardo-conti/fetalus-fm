@@ -13,12 +13,13 @@ from rich.logging import RichHandler
 from sklearn.metrics import confusion_matrix, classification_report, f1_score
 import matplotlib.pyplot as plt
 import seaborn as sns
+import numpy as np
 
 from datetime import datetime
 from tqdm import tqdm
 from torchinfo import summary
 from torch.utils.data import DataLoader
-from foundation.model import DINOClassifier
+from foundation.model import DINOClassifier, create_multiple_classifiers, AllClassifiers, FocalLoss, LabelSmoothingCrossEntropy
 from utils.utils import DEFAULT_IMAGE_SIZE, SEED, FUS_STRUCTS, FPDB_BRAIN_PLANES, SaveBestModel, save_model, save_plots
 # Removed import of seg train/validate, will define cls versions below
 
@@ -42,6 +43,113 @@ def plot_confusion_matrix(cm, classes, out_dir, title='Confusion Matrix'):
     plt.tight_layout()
     plt.savefig(os.path.join(out_dir, 'confusion_matrix.png'), dpi=300, bbox_inches='tight')
     plt.close()
+
+
+def create_prediction_grid(dataset, dataloader, backbone_model, classifier, classes, output_dir, device='cpu', max_samples=16):
+    """
+    Create a grid visualization of predictions showing input images with ground truth and predictions.
+
+    Args:
+        dataset: The dataset object
+        dataloader: DataLoader for the dataset
+        backbone_model: The backbone model (DINOv2/v3)
+        classifier: The classifier model (AllClassifiers with 'temp' key)
+        classes: List of class names
+        output_dir: Directory to save the visualization
+        device: Device to run inference on
+        max_samples: Maximum number of samples to visualize (default: 16)
+    """
+    backbone_model.eval()
+    classifier.eval()
+
+    all_images = []
+    all_labels = []
+    all_preds = []
+    all_confidences = []
+
+    with torch.no_grad():
+        for batch_idx, (batch_images, batch_labels) in enumerate(dataloader):
+            batch_images = batch_images.to(device)
+            batch_labels = batch_labels.to(device)
+
+            # Get features and predictions
+            features = backbone_model.backbone_model(batch_images)
+            outputs = classifier(features)['temp']  # Get the single classifier output
+
+            preds = torch.argmax(outputs, dim=1)
+            confidences = torch.nn.functional.softmax(outputs, dim=1)
+
+            all_images.extend(batch_images.cpu())
+            all_labels.extend(batch_labels.cpu())
+            all_preds.extend(preds.cpu())
+            all_confidences.extend(confidences.cpu())
+
+            if len(all_images) >= max_samples:
+                break
+
+    # Keep only the first max_samples
+    all_images = all_images[:max_samples]
+    all_labels = all_labels[:max_samples]
+    all_preds = all_preds[:max_samples]
+    all_confidences = all_confidences[:max_samples]
+
+    # Create visualization grid
+    n_cols = 4
+    n_rows = (len(all_images) + n_cols - 1) // n_cols
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(16, 4*n_rows))
+    if n_rows == 1:
+        axes = axes.reshape(1, -1)
+
+    for idx in range(len(all_images)):
+        row = idx // n_cols
+        col = idx % n_cols
+
+        ax = axes[row, col]
+
+        # Denormalize image (reverse ImageNet normalization if needed)
+        img = all_images[idx]
+        if img.shape[0] == 3:  # RGB image, denormalize
+            mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+            std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+            img = img * std + mean
+        img = torch.clamp(img, 0, 1)  # Clamp to valid range
+
+        # Convert to numpy and transpose to HWC
+        img_np = img.permute(1, 2, 0).numpy()
+
+        # For RGB images, convert to grayscale to avoid color artifacts
+        if img.shape[0] == 3:
+            img_np = np.mean(img_np, axis=2)
+
+        ax.imshow(img_np, cmap='gray')
+        ax.axis('off')
+
+        # Get prediction info
+        true_label = all_labels[idx].item()
+        pred_label = all_preds[idx].item()
+        confidence = all_confidences[idx][pred_label].item()
+
+        # Color based on correctness
+        color = 'green' if true_label == pred_label else 'red'
+
+        title = f'GT: {classes[true_label]}\nPred: {classes[pred_label]}\nConf: {confidence:.2f}'
+        ax.set_title(title, fontsize=10, color=color, fontweight='bold' if true_label != pred_label else 'normal')
+
+    # Hide empty subplots
+    for idx in range(len(all_images), n_rows * n_cols):
+        row = idx // n_cols
+        col = idx % n_cols
+        axes[row, col].axis('off')
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'prediction_samples.png'), dpi=300, bbox_inches='tight')
+    plt.close()
+
+    # Log summary
+    correct_predictions = sum(1 for gt, pred in zip(all_labels, all_preds) if gt == pred)
+    accuracy = correct_predictions / len(all_labels)
+    print(f"Sample prediction grid - Accuracy on shown samples: {accuracy:.2f} ({correct_predictions}/{len(all_labels)})")
 
 
 # ==========================================================================================
@@ -72,17 +180,23 @@ args = parser.parse_args()
 # ==========================================================================================
 
 
-# ========================================================================================== 
+# ==========================================================================================
 # =================================== LOGGING SYSTEM =======================================
 # Console and logging setup
 console = Console()
 log = logging.getLogger("rich")
-# logging.basicConfig(
-#     level=logging.DEBUG if args.debug else logging.INFO,
-#     format="%(message)s",
-#     datefmt="[%X]",
-#     handlers=[RichHandler()]
-# )
+logging.basicConfig(
+    level=logging.DEBUG if args.debug else logging.INFO,
+    format="%(message)s",
+    datefmt="[%X]",
+    handlers=[RichHandler()],
+    force=True  # Force reconfiguration of logging
+)
+# Ensure logs are flushed immediately
+import sys
+log_handler = logging.StreamHandler(sys.stdout)
+log_handler.setLevel(logging.DEBUG if args.debug else logging.INFO)
+log.addHandler(log_handler)
 # ==========================================================================================
 
 
@@ -116,9 +230,20 @@ if __name__ == '__main__':
 
     # fallback for config parameters
     config.setdefault('image_size', DEFAULT_IMAGE_SIZE)
+    config.setdefault('batch_size', 16)  # default batch size
 
     # classes
     classes = FPDB_BRAIN_PLANES
+
+    # Load grid search configurations early (before using in panels)
+    grid_config = config.get('grid_search', {})
+    learning_rates_list = grid_config.get('learning_rates', [1e-5, 1e-4, 1e-3, 1e-2, 1e-1])
+    n_blocks_list = grid_config.get('n_blocks', [1, 2, 4])
+    loss_types_list = grid_config.get('loss_types', ['ce', 'focal', 'label_smooth'])
+    schedulers_list = grid_config.get('schedulers', ['step', 'cosine', 'plateau'])
+
+    # For now, use global batch_size and scheduler (configurable for future experiments)
+    scheduler_type = schedulers_list[0] if schedulers_list else 'cosine'  # Use first scheduler as default
 
     # Create output directory of the training experiment
     timestamp = datetime.now().strftime("%y%m%d_%H%M")
@@ -145,10 +270,16 @@ if __name__ == '__main__':
             f"[bold yellow]Datasets[/bold yellow]: [white]{', '.join(config['datasets'])}[/white]",
             f"[bold yellow]Image Size[/bold yellow]: [white]{config['image_size']}[/white]",
             f"[bold yellow]Epochs[/bold yellow]: [white]{config['epochs']}[/white]",
-            f"[bold yellow]Loss Function[/bold yellow]: [white]{config['loss']}[/white]",
             f"[bold yellow]Batch size[/bold yellow]: [white]{config['batch_size']}[/white]",
-            f"[bold yellow]Learning rate[/bold yellow]: [white]{config['lr']}[/white]",
             f"[bold yellow]Weight decay[/bold yellow]: [white]{config['weight_decay']}[/white]",
+            f"[bold yellow]Early stopping patience[/bold yellow]: [white]{config.get('early_stop_patience', 10)}[/white]",
+            f"[bold yellow]\n📊 GRID SEARCH CONFIGURATIONS 📊[/bold yellow]",
+            f"[bold yellow]Learning rates[/bold yellow]: [white]{learning_rates_list}[/white]",
+            f"[bold yellow]Architecture depths[/bold yellow]: [white]{n_blocks_list}[/white]",
+            f"[bold yellow]Loss functions[/bold yellow]: [white]{loss_types_list}[/white]",
+            f"[bold yellow]Schedulers[/bold yellow]: [white]{schedulers_list}[/white]",
+            f"[bold yellow]Scheduler (current)[/bold yellow]: [white]{scheduler_type.upper()}[/white]",
+            f"[bold yellow]Total combinations[/bold yellow]: [white]{len(learning_rates_list) * len(n_blocks_list) * 2 * len(loss_types_list)} (CLS + AvgPool)[/white]",
         ]),
         title=f"[yellow]Experiment [bold]{exp_name}[/bold] (ID: {exp_id})[/yellow]",
         style="bold yellow"
@@ -195,7 +326,7 @@ if __name__ == '__main__':
     # ==========================================================================================
 
 
-    # ========================================================================================== 
+    # ==========================================================================================
     # ========================================= MODEL ==========================================
     # Set device based on availability
     device = torch.device(
@@ -204,27 +335,58 @@ if __name__ == '__main__':
     )
     log.info(f"Using device: {device}")
     
-    # Initialize the model
-    model = DINOClassifier(nc=num_classes,
-                               image_size=config['image_size'],
-                               config=config['dino'],
-                               fine_tune=args.fine_tune,
-                               device=device)
-    model.to(device)
+    # Grid search configurations loaded from config
+    grid_config = config.get('grid_search', {})
+    learning_rates_list = grid_config.get('learning_rates', [1e-5, 1e-4, 1e-3, 1e-2, 1e-1])
+    n_blocks_list = grid_config.get('n_blocks', [1, 2, 4])
+    loss_types_list = grid_config.get('loss_types', ['ce', 'focal', 'label_smooth'])
+    schedulers_list = grid_config.get('schedulers', ['step', 'cosine', 'plateau'])
+
+    # For now, use global batch_size and scheduler (configurable for future experiments)
+    scheduler_type = schedulers_list[0] if schedulers_list else 'cosine'  # Use first scheduler as default
+    
+    # Initialize the single backbone model (backbone shared across all classifiers)
+    backbone_model = DINOClassifier(nc=num_classes,
+                                   image_size=config['image_size'],
+                                   config=config['dino'],
+                                   fine_tune=args.fine_tune,
+                                   device=device)
+    backbone_model.to(device)
 
     if args.debug:
-        log.debug("Model summary")
+        log.debug("Backbone model summary")
         summary(
-            model, 
+            backbone_model,
             (1, 3, config['image_size'][0], config['image_size'][1]),
             col_names=('input_size', 'output_size', 'num_params'),
             row_settings=['var_names']
         )
 
-    optimizer = torch.optim.AdamW(model.parameters(), 
-                                  weight_decay=config['weight_decay'], 
-                                  lr=config['lr'])
-    log.debug(f"Optimizer: AdamW with weight decay: {config['weight_decay']} and learning rate: {config['lr']}")
+    # Create dummy input to get backbone features for multiple classifiers
+    dummy_input = torch.randn(1, 3, config['image_size'][0], config['image_size'][1]).to(device)
+    sample_output = backbone_model.backbone_model(dummy_input)
+
+    # Create multiple classifiers with comprehensive grid search (architectures + loss functions)
+    linear_classifiers, optim_param_groups, loss_functions = create_multiple_classifiers(
+        sample_output=sample_output,
+        n_last_blocks_list=n_blocks_list,
+        learning_rates=learning_rates_list,
+        batch_size=config['batch_size'],
+        num_classes=num_classes,
+        loss_types=loss_types_list
+    )
+
+    # Move classifiers to device if using CUDA
+    if torch.cuda.is_available():
+        linear_classifiers = linear_classifiers.cuda()
+
+    log.info(f"Created {len(linear_classifiers.classifiers_dict)} classifier configurations")
+    for name in linear_classifiers.classifiers_dict.keys():
+        log.debug(f"Classifier: {name}")
+
+    # Optimizer with different LRs for each classifier (as per DINOv3)
+    optimizer = torch.optim.AdamW(optim_param_groups, weight_decay=config['weight_decay'])
+    log.debug(f"Optimizer: AdamW with weight decay: {config['weight_decay']} and multiple learning rates")
 
     # For classification, always use CrossEntropyLoss
     criterion = nn.CrossEntropyLoss()
@@ -234,9 +396,13 @@ if __name__ == '__main__':
 
     # ==========================================================================================
     # ================================== LR SCHEDULER & EARLY STOPPING ==========================
-    # Initialize LR scheduler
-    scheduler = get_lr_scheduler(optimizer, config)
-    
+    # Calculate epoch length for advanced schedulers
+    epoch_length = len(train_loader)  # Iterations per epoch
+    max_iter = config['epochs'] * epoch_length
+
+    # Use CosineAnnealing scheduler as per DINOv3 best practices
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max_iter, eta_min=1e-6)
+
     # Initialize Early Stopping
     early_stopping = EarlyStopping(
         patience=config.get('early_stop_patience', 10),
@@ -244,98 +410,301 @@ if __name__ == '__main__':
         verbose=True
     )
 
-    # ========================================================================================== 
+    # Track best classifier across all configurations
+    best_classifier_name = None
+    best_accuracy = -1.0
+
+    # ==========================================================================================
     # ===================================== TRAINING LOOP ======================================
-    log.info("Starting training loop...")
+    log.info("Starting training loop with multiple classifiers...")
+    log.info(f"Training on {len(train_loader)} batches per epoch with {len(linear_classifiers.classifiers_dict)} classifier configurations")
+    log.info(f"Batch size: {config['batch_size']}, Learning rate scaled automatically per classifier")
+    log.info(f"Using CosineAnnealingLR scheduler (T_max: {max_iter}, eta_min: 1e-6)")
 
-    # Initialize classes for saving best models
+    # Initialize classes for saving best models (will be used for the best classifier)
     save_best_model = SaveBestModel()
-    # save_best_acc = SaveBestModelIOU()  # Repurpose for accuracy
 
-    # Initialize lists to store training and validation loss and metrics
+    # Initialize lists to store training and validation loss and metrics per epoch
     train_loss, train_acc = [], []
     valid_loss, valid_acc = [], []
-    
+
+    # Track metrics per classifier for grid search analysis
+    classifier_metrics = {name: {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': []}
+                         for name in linear_classifiers.classifiers_dict.keys()}
+
+    iteration = 0
     for epoch in range(config['epochs']):
-        print(f"EPOCH: {epoch + 1}/{config['epochs']}")
+        log.info(f"🟢 EPOCH {epoch + 1}/{config['epochs']} - Starting training phase...")
 
-        # Train for one epoch
-        train_results = train(
-            model,
-            train_loader,
-            optimizer,
-            criterion,
-            task='cls',
-            logger=log,
-            device=device,
-            scheduler=scheduler  # Pass scheduler to step per epoch
-        )
-        # For cls: train_results = (train_loss, train_acc)
-        train_epoch_loss, train_epoch_acc = train_results
+        # ======================== TRAINING PHASE ========================
+        backbone_model.train()
+        linear_classifiers.train()
 
-        # Validate for one epoch
-        val_results = validate(
-            model,
-            val_loader,
-            criterion,
-            task='cls',
-            logger=log,
-            phase='val',
-            device=device
-        )
-        # For cls: val_results = (val_loss, val_acc)
-        valid_epoch_loss, valid_epoch_acc = val_results
+        total_train_loss = 0.0
+        total_train_correct = 0.0
+        total_train_samples = 0
 
-        # Append the metrics to the lists
-        train_loss.append(train_epoch_loss)
-        train_acc.append(train_epoch_acc)
-        valid_loss.append(valid_epoch_loss)
-        valid_acc.append(valid_epoch_acc)
+        log.info(f"   Training on {len(train_loader)} batches...")
+        for batch_idx, (batch_data, batch_labels) in enumerate(train_loader):
+            if batch_idx % 10 == 0:  # Log ogni 10 batch
+                log.info(f"   Batch {batch_idx+1}/{len(train_loader)} - Processing...")
 
-        # Step the LR scheduler (for epoch-based schedulers)
-        if isinstance(scheduler, torch.optim.lr_scheduler.StepLR) or \
-           isinstance(scheduler, torch.optim.lr_scheduler.CosineAnnealingLR):
+            batch_data = batch_data.to(device)
+            batch_labels = batch_labels.to(device)
+
+            # Extract features with frozen backbone
+            with torch.no_grad():
+                features = backbone_model.backbone_model(batch_data)
+
+            # Forward pass through all classifiers and compute loss using their specific loss functions
+            outputs = linear_classifiers(features)
+            losses = {f"loss_{k}": loss_functions[k](v, batch_labels) for k, v in outputs.items()}
+            loss = sum(losses.values()) / len(outputs)  # Average loss across classifiers for proper scaling
+
+            # Backpropagation
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            # Accumulate training metrics for all classifiers combined
+            batch_size = batch_labels.size(0)
+            batch_acc = 0.0
+            for k in outputs.keys():
+                acc_k = (torch.argmax(outputs[k], dim=1).eq(batch_labels)).float().mean().item()
+                batch_acc += acc_k
+            batch_acc /= len(outputs)
+            total_train_correct += batch_acc * batch_size
+            total_train_loss += loss.item()
+            total_train_samples += batch_size
+
+            iteration += 1
             scheduler.step()
-        elif isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-            scheduler.step(valid_epoch_loss)  # Step with validation loss
 
-        # Check early stopping
-        early_stopping(valid_epoch_loss)
+            # Accumulate training metrics per classifier for grid search analysis
+            # Note: Since all classifiers are trained simultaneously, we store the combined average
+            # as a proxy for individual classifier training progress (updated at epoch end)
+
+            # Log intermediate progress every 50 batches
+            if (batch_idx + 1) % 50 == 0:
+                current_lr = optimizer.param_groups[0]['lr']
+                log.info(f"   📊 Batch {batch_idx+1}/{len(train_loader)} - Loss: {loss.item():.4f}, LR: {current_lr:.6f}")
+
+            # Log intermediate progress every 50 batches
+            if (batch_idx + 1) % 50 == 0:
+                current_lr = optimizer.param_groups[0]['lr']
+                log.info(f"   📊 Batch {batch_idx+1}/{len(train_loader)} - Loss: {loss.item():.4f}, LR: {current_lr:.6f}")
+
+        log.info("   ✅ Training phase completed")
+
+        # Calculate average training metrics across all classifiers
+        avg_train_loss = total_train_loss / len(train_loader)
+        # Fixed: calculate accuracy as total correct over total samples
+        avg_train_acc = total_train_correct / total_train_samples if total_train_samples > 0 else 0.0
+
+        train_loss.append(avg_train_loss)
+        train_acc.append(avg_train_acc)
+
+        # Store average training metrics for ALL classifiers at epoch end (they train simultaneously)
+        for classifier_name in classifier_metrics.keys():
+            classifier_metrics[classifier_name]['train_loss'].append(avg_train_loss)
+            classifier_metrics[classifier_name]['train_acc'].append(avg_train_acc)
+
+        log.info(f"🔵 EPOCH {epoch + 1} - Starting validation phase on {len(val_loader)} batches...")
+
+        # ======================== VALIDATION PHASE ========================
+        backbone_model.eval()
+        linear_classifiers.eval()
+
+        epoch_val_results = {}  # Store results for each classifier
+
+        with torch.no_grad():
+            for batch_idx, (batch_data, batch_labels) in enumerate(val_loader):
+                if batch_idx % 10 == 0:  # Log ogni 10 batch di validation
+                    log.info(f"   Validation batch {batch_idx+1}/{len(val_loader)} - Evaluating...")
+
+                batch_data = batch_data.to(device)
+                batch_labels = batch_labels.to(device)
+
+                features = backbone_model.backbone_model(batch_data)
+                outputs = linear_classifiers(features)
+
+                for classifier_name, classifier_output in outputs.items():
+                    if classifier_name not in epoch_val_results:
+                        epoch_val_results[classifier_name] = {
+                            'loss': 0.0, 'correct': 0, 'total': 0, 'preds': [], 'labels': []
+                        }
+
+                    loss = loss_functions[classifier_name](classifier_output, batch_labels)
+                    preds = torch.argmax(classifier_output, dim=1)
+
+                    epoch_val_results[classifier_name]['loss'] += loss.item()
+                    epoch_val_results[classifier_name]['correct'] += preds.eq(batch_labels).sum().item()
+                    epoch_val_results[classifier_name]['total'] += batch_labels.size(0)
+                    epoch_val_results[classifier_name]['preds'].extend(preds.cpu().numpy())
+                    epoch_val_results[classifier_name]['labels'].extend(batch_labels.cpu().numpy())
+
+        log.info("   ✅ Validation phase completed")
+
+        # Process validation results for each classifier
+        best_epoch_accuracy = -1.0
+        best_epoch_classifier = None
+        log.info("   🔍 Analyzing validation results across all classifiers...")
+
+        for classifier_name, results in epoch_val_results.items():
+            val_loss = results['loss'] / len(val_loader)
+            val_accuracy = results['correct'] / results['total']
+
+            classifier_metrics[classifier_name]['val_loss'].append(val_loss)
+            classifier_metrics[classifier_name]['val_acc'].append(val_accuracy)
+
+            if val_accuracy > best_epoch_accuracy:
+                best_epoch_accuracy = val_accuracy
+                best_epoch_classifier = classifier_name
+
+        log.info(f"   📈 Epoch best: {best_epoch_accuracy:.4f} ({best_epoch_classifier})")
+
+        # Update global best classifier
+        updated_global = False
+        if best_epoch_accuracy > best_accuracy:
+            best_accuracy = best_epoch_accuracy
+            best_classifier_name = best_epoch_classifier
+            updated_global = True
+            log.info(f"   🎯 NEW GLOBAL BEST: {best_accuracy:.4f} ({best_classifier_name}) - Saving checkpoint...")
+
+            # Save the best classifier state
+            best_classifier_state = {
+                'backbone_state_dict': backbone_model.state_dict(),
+                'classifier_state_dict': linear_classifiers.classifiers_dict[best_classifier_name].state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'best_accuracy': best_accuracy,
+                'best_classifier_name': best_classifier_name,
+                'epoch': epoch
+            }
+            torch.save(best_classifier_state, os.path.join(out_dir, 'best_classifier.pth'))
+            log.info("   💾 Checkpoint saved successfully")
+        else:
+            log.info(f"   🔄 No improvement - Global best remains: {best_accuracy:.4f} ({best_classifier_name})")
+
+        # Use weighted average validation metrics for early stopping
+        avg_val_loss = sum(results['loss'] / len(val_loader) for results in epoch_val_results.values()) / len(epoch_val_results)
+        avg_val_acc = sum(results['correct'] / results['total'] for results in epoch_val_results.values()) / len(epoch_val_results)
+
+        valid_loss.append(avg_val_loss)
+        valid_acc.append(avg_val_acc)
+
+        # Check early stopping based on best accuracy
+        early_stopping(avg_val_loss)
         if early_stopping.early_stop:
-            print(f"Early stopping triggered at epoch {epoch + 1}")
+            log.warning(f"Early stopping triggered at epoch {epoch + 1} - No improvement in {early_stopping.patience} epochs")
             break
 
-        # Save the best models based on loss
-        save_best_model(
-            valid_epoch_loss, epoch, model, out_dir, name='model_loss'
-        )
+        # Log comprehensive metrics
+        log.info("🎯 EPOCH SUMMARY:")
+        print(f"   Training Loss: {avg_train_loss:.4f}, Training Acc: {avg_train_acc:.4f}")
+        print(f"   Best Val Acc: {best_epoch_accuracy:.4f} ({best_epoch_classifier})")
+        print(f"   Avg Val Loss: {avg_val_loss:.4f}, Avg Val Acc: {avg_val_acc:.4f}")
+        print(f"   Global Best: {best_accuracy:.4f} ({best_classifier_name})")
+        print('-' * 90)
 
-        # Log current LR for transparency
-        current_lr = optimizer.param_groups[0]['lr']
-        print(
-            f"Train Epoch Loss: {train_epoch_loss:.4f}, "
-            f"Train Epoch Acc: {train_epoch_acc:.4f}, "
-            f"LR: {current_lr:.6f}"
-        )
-        print(
-            f"Valid Epoch Loss: {valid_epoch_loss:.4f}, "
-            f"Valid Epoch Acc: {valid_epoch_acc:.4f}"
-        )
+    # Final comprehensive training summary
+    log.info("🎉 TRAINING COMPLETED SUCCESSFULLY!")
+    log.info("=" * 100)
+    log.info(f"📈 Final Results Summary:")
+    log.info(f"   └─ Best Classifier: {best_classifier_name}")
+    log.info(f"   └─ Best Validation Accuracy: {best_accuracy:.4f}")
+    log.info(f"   └─ Total Configurations Tested: {len(linear_classifiers.classifiers_dict)}")
+    log.info(f"   └─ Training Epochs Completed: {len(train_loss)}")
+    log.info(f"   └─ Final Training Loss: {train_loss[-1]:.4f}")
+    log.info(f"   └─ Final Training Accuracy: {train_acc[-1]:.4f}")
+    log.info(f"   └─ Final Validation Loss: {valid_loss[-1]:.4f}")
+    log.info(f"   └─ Final Validation Accuracy: {valid_acc[-1]:.4f}")
+    log.info("=" * 100)
 
-        print('-' * 50)
-
-    log.info("Training loop completed.")
+    # Save classifier metrics for analysis
+    with open(os.path.join(out_dir, 'classifier_grid_search_metrics.json'), 'w') as f:
+        json.dump(classifier_metrics, f, indent=2)
     # ==================================================================================
 
 
-    # =================================== SAVE MODELS ==================================
-    log.info("Saving plots and final model ...")
+    # =================================== SAVE BEST MODEL RESULTS ==================================
+    log.info("Saving best model results and comprehensive grid search analysis...")
 
-    # Save the loss and accuracy plots
-    save_plots(train_acc, valid_acc, train_loss, valid_loss, train_acc, valid_acc, out_dir, task='cls')
+    # Create grid_search subdirectory for detailed results of all configurations
+    grid_search_dir = os.path.join(out_dir, 'grid_search')
+    os.makedirs(grid_search_dir, exist_ok=True)
 
-    # Save final model
-    save_model(config['epochs'], model, optimizer, criterion, out_dir, name='final_model')
+    # Save comprehensive grid search results
+    log.info(f"Saving grid search analysis to {grid_search_dir}")
+
+    # Save classifier metrics JSON
+    with open(os.path.join(grid_search_dir, 'all_classifier_metrics.json'), 'w') as f:
+        json.dump(classifier_metrics, f, indent=2)
+
+    # Save final best classifier summary
+    grid_search_summary = {
+        'best_classifier': best_classifier_name,
+        'best_accuracy': best_accuracy,
+        'total_configurations_tested': len(linear_classifiers.classifiers_dict),
+        'grid_search_parameters': {
+            'learning_rates': learning_rates_list,
+            'n_blocks': n_blocks_list,
+            'loss_types': loss_types_list,
+            'schedulers': schedulers_list,
+            'current_scheduler': scheduler_type,
+            'current_batch_size': config['batch_size']
+        },
+        'training_epochs_completed': len(train_loss),
+        'best_classifier_found_at_epoch': epoch if best_classifier_name else None,
+        'early_stopping_triggered': early_stopping.early_stop
+    }
+
+    with open(os.path.join(grid_search_dir, 'grid_search_summary.json'), 'w') as f:
+        json.dump(grid_search_summary, f, indent=2)
+
+    # Save detailed results for each classifier configuration
+    best_classifier_dir = os.path.join(grid_search_dir, 'best_classifier')
+    os.makedirs(best_classifier_dir, exist_ok=True)
+
+    # Save the best classifier model and its training curves (from final epoch)
+    if best_classifier_name:
+        log.info(f"Saving best classifier results: {best_classifier_name}")
+
+        # Get the best classifier's final performance metrics
+        best_metrics = classifier_metrics[best_classifier_name]
+        final_train_loss = best_metrics['train_loss'][-1] if best_metrics['train_loss'] else 0
+        final_train_acc = best_metrics['train_acc'][-1] if best_metrics['train_acc'] else 0
+        final_val_loss = best_metrics['val_loss'][-1] if best_metrics['val_loss'] else 0
+        final_val_acc = best_metrics['val_acc'][-1] if best_metrics['val_acc'] else 0
+
+        # Since we train all classifiers simultaneously, create synthetic curves showing
+        # the evolution of the best classifier across epochs
+        epochs_range = list(range(1, len(best_metrics['val_acc']) + 1))
+        best_train_acc_curve = [best_metrics['train_acc'][i] if i < len(best_metrics['train_acc']) else best_metrics['train_acc'][-1] for i in range(len(epochs_range))]
+        best_val_acc_curve = best_metrics['val_acc']
+        best_train_loss_curve = [best_metrics['train_loss'][i] if i < len(best_metrics['train_loss']) else best_metrics['train_loss'][-1] for i in range(len(epochs_range))]
+        best_val_loss_curve = best_metrics['val_loss']
+
+        # Save plots showing the training curves of the best classifier across epochs
+        save_plots(best_train_acc_curve, best_val_acc_curve, best_train_loss_curve, best_val_loss_curve,
+                  best_train_acc_curve, best_val_acc_curve, best_classifier_dir, task='cls')
+
+        # Removed individual classifier performance files to avoid sub-folders for each configuration
+
+        # Save final best model
+        final_model_state = {
+            'backbone_state_dict': backbone_model.state_dict(),
+            'best_classifier_name': best_classifier_name,
+            'best_classifier_state_dict': linear_classifiers.classifiers_dict[best_classifier_name].state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'best_accuracy': best_accuracy,
+            'config': config_copy,
+            'epoch': len(train_loss)
+        }
+        torch.save(final_model_state, os.path.join(best_classifier_dir, 'final_model.pth'))
+        log.info(f"✅ Saved best classifier model and training curves to {best_classifier_dir}")
+    else:
+        log.warning("No best classifier found - no model saved")
+
     # ==================================================================================
 
 
@@ -353,75 +722,122 @@ if __name__ == '__main__':
             'val_acc': valid_acc,
             'test_loss': None,
             'test_acc': None,
-            'test_f1_score': None
+            'test_f1_score': None,
+            'best_classifier': best_classifier_name,
+            'best_accuracy': best_accuracy
         }
     else:
-        checkpoint = torch.load(os.path.join(out_dir, 'best_model_loss.pth'), weights_only=False)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        model.eval()
+        # Load the best classifier found during training
+        if best_classifier_name:
+            log.info(f"Loading best classifier: {best_classifier_name} (val acc: {best_accuracy:.4f})")
+            checkpoint = torch.load(os.path.join(out_dir, 'best_classifier.pth'), weights_only=False)
 
-        # Compute predictions and labels for confusion matrix
-        all_preds = []
-        all_labels = []
-        with torch.no_grad():
-            for data in test_loader:
-                pixel_values, labels = data[0].to(device), data[1].to(device)
-                outputs = model(pixel_values)
-                preds = torch.argmax(outputs, dim=1)
-                all_preds.extend(preds.cpu().numpy())
-                all_labels.extend(labels.cpu().numpy())
+            # Load backbone and best classifier
+            backbone_model.load_state_dict(checkpoint['backbone_state_dict'])
+            best_classifier = AllClassifiers({'temp': linear_classifiers.classifiers_dict[best_classifier_name]})
+            best_classifier.classifiers_dict['temp'].load_state_dict(checkpoint['classifier_state_dict'])
 
-        # Print confusion matrix and classification report
-        cm = confusion_matrix(all_labels, all_preds)
-        print("Confusion Matrix:")
-        print(cm)
+            backbone_model.eval()
+            best_classifier.eval()
 
-        # Save confusion matrix image
-        plot_confusion_matrix(cm, classes, out_dir, title='Brain Planes Classification Confusion Matrix')
+            # Compute predictions and labels for confusion matrix
+            all_preds = []
+            all_labels = []
+            test_loss_accum = 0.0
+            test_correct = 0
+            test_total = 0
 
-        # Generate classification report
-        class_report = classification_report(all_labels, all_preds, target_names=classes)
-        print("\nClassification Report:")
-        print(class_report)
+            with torch.no_grad():
+                for data in test_loader:
+                    pixel_values, labels = data[0].to(device), data[1].to(device)
+                    features = backbone_model.backbone_model(pixel_values)
+                    outputs = best_classifier(features)['temp']  # Get the single classifier output
+                    
+                    # Compute loss using the specific loss function of the best classifier
+                    loss = loss_functions[best_classifier_name](outputs, labels)
+                    test_loss_accum += loss.item()
 
-        # Save classification report to file
-        with open(os.path.join(out_dir, 'classification_report.txt'), 'w') as f:
-            f.write("Brain Planes Classification Report\n")
-            f.write("="*50 + "\n\n")
-            f.write(class_report)
+                    # Get predictions
+                    preds = torch.argmax(outputs, dim=1)
+                    all_preds.extend(preds.cpu().numpy())
+                    all_labels.extend(labels.cpu().numpy())
 
-        # Compute F1-score
-        f1 = f1_score(all_labels, all_preds, average='weighted')  # Weighted average
+                    # Accumulate accuracy
+                    test_correct += preds.eq(labels).sum().item()
+                    test_total += labels.size(0)
+            
+            test_loss = test_loss_accum / len(test_loader)
+            test_acc = test_correct / test_total
 
-        # Compute test loss and accuracy
-        test_results = validate(
-            model,
-            test_loader,
-            criterion,
-            task='cls',
-            logger=log,
-            phase='test',
-            device=device
-        )
-        test_loss, test_acc = test_results
+            # Compute F1-score early (before saving report)
+            f1 = f1_score(all_labels, all_preds, average='weighted', zero_division=0)
 
-        # Save final metrics
-        metrics = {
-            'train_loss': train_loss,
-            'train_acc': train_acc,
-            'val_loss': valid_loss,
-            'val_acc': valid_acc,
-            'test_loss': test_loss,
-            'test_acc': test_acc,
-            'test_f1_score': float(f1)
-        }
-    
+            # Create and save sample prediction grid for manual inspection
+            log.info("Creating sample prediction grid for visual inspection...")
+            try:
+                create_prediction_grid(fus_test, test_loader, backbone_model, best_classifier, classes, best_classifier_dir, device=device, max_samples=20)
+                log.info("Sample prediction grid saved successfully")
+            except Exception as e:
+                log.warning(f"Could not create prediction grid: {e}")
+
+            # Print confusion matrix and classification report
+            cm = confusion_matrix(all_labels, all_preds)
+            print("\nConfusion Matrix:")
+            print(cm)
+
+            # Save confusion matrix image in best classifier directory
+            plot_confusion_matrix(cm, classes, best_classifier_dir, title=f'Brain Planes Classification ({best_classifier_name})')
+
+            # Generate classification report
+            class_report = classification_report(all_labels, all_preds, target_names=classes, zero_division=0)
+            print("\nClassification Report:")
+            print(class_report)
+
+            # Save classification report to best classifier directory
+            with open(os.path.join(best_classifier_dir, 'classification_report.txt'), 'w') as f:
+                f.write(f"Brain Planes Classification Report - {best_classifier_name}\n")
+                f.write("="*70 + "\n\n")
+                f.write(f"Best Classifier: {best_classifier_name}\n")
+                f.write(f"Validation Accuracy: {best_accuracy:.4f}\n")
+                f.write(f"Test Accuracy: {test_acc:.4f}\n")
+                f.write(f"Test F1 Score: {f1:.4f}\n\n")
+                f.write(class_report)
+
+            # Save final metrics
+            metrics = {
+                'train_loss': train_loss,
+                'train_acc': train_acc,
+                'val_loss': valid_loss,
+                'val_acc': valid_acc,
+                'test_loss': test_loss,
+                'test_acc': test_acc,
+                'test_f1_score': float(f1),
+                'best_classifier': best_classifier_name,
+                'best_val_accuracy': best_accuracy
+            }
+
+            log.info(f"Test Results - Classifier: {best_classifier_name}")
+            log.info(f"Test Accuracy: {test_acc:.4f}, Test F1: {f1:.4f}")
+        else:
+            log.warning("No best classifier found, skipping test phase")
+            metrics = {
+                'train_loss': train_loss,
+                'train_acc': train_acc,
+                'val_loss': valid_loss,
+                'val_acc': valid_acc,
+                'test_loss': None,
+                'test_acc': None,
+                'test_f1_score': None,
+                'best_classifier': None,
+                'best_accuracy': None
+            }
+
     log.info("Saving metrics to JSON file...")
     with open(os.path.join(out_dir, 'metrics.json'), 'w') as f:
         json.dump(metrics, f, indent=2)
 
     log.info("Test phase completed.")
-    # ================================================================================== 
+    # ==================================================================================
     
     
     log.info("Task completed successfully.")

@@ -13,12 +13,14 @@ from .decoders import Decoder, ImageDataDecoder, TargetDecoder
 class ExtendedVisionDataset(VisionDataset):
     def __init__(
         self,
+        root,
+        transforms=None,
+        transform=None,
+        target_transform=None,
         image_decoder: Decoder = ImageDataDecoder,
         target_decoder: Decoder = TargetDecoder,
-        *args,
-        **kwargs,
     ) -> None:
-        super().__init__(*args, **kwargs)  # type: ignore
+        super().__init__(root, transforms, transform, target_transform)
         self.image_decoder = image_decoder
         self.target_decoder = target_decoder
 
