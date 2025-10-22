@@ -2,13 +2,14 @@
     {
         "dino": {
             "version": "v3",
-            "backbone_size": "large",
+            "backbone_type": "convnext",
+            "backbone_size": "tiny",
             "pretrained_weights": false,
-            "intermediate_layers": [18, 20, 22, 23]
+            "intermediate_layers": [7, 9, 10, 11]
         },
         "datasets": ["FPDB"],
         "image_size": [224, 224],
-        "epochs": 100,
+        "epochs": 2,
         "batch_size": 16,
         "weight_decay": 1e-2,
         "early_stop_patience": 15,

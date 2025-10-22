@@ -373,7 +373,8 @@ if __name__ == '__main__':
         learning_rates=learning_rates_list,
         batch_size=config['batch_size'],
         num_classes=num_classes,
-        loss_types=loss_types_list
+        loss_types=loss_types_list,
+        backbone_type=config['dino'].get('backbone_type', 'vit')
     )
 
     # Move classifiers to device if using CUDA
