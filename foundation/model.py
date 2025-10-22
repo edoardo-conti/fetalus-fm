@@ -87,7 +87,7 @@ def scale_lr(learning_rates, batch_size):
     return learning_rates * (batch_size * torch.cuda.device_count() if torch.cuda.is_available() else batch_size) / 256.0
 
 
-def create_multiple_classifiers(sample_output, n_last_blocks_list, learning_rates, batch_size, num_classes=1000, loss_types=None):
+def create_multiple_classifiers(sample_output, n_last_blocks_list, learning_rates, batch_size, num_classes=1000, loss_types=None, backbone_type='vit'):
     """
     Create multiple linear classifiers with different configurations for comprehensive grid search.
     Tests different architectures, learning rates, and loss functions.
@@ -103,18 +103,19 @@ def create_multiple_classifiers(sample_output, n_last_blocks_list, learning_rate
     for n_blocks in n_last_blocks_list:
         # Always use avgpool=True for better performance
         for avgpool in [True]:
-            for cls_token in [True, False]:  # Test both CLS token and global average
+            for cls_token in [False] if backbone_type == 'convnext' else [True, False]:  # CLS not supported for ConvNeXt
                 for _lr in learning_rates:
                     lr = scale_lr(_lr, batch_size)
                     for loss_type in loss_types:
-                        out_dim = create_linear_input(sample_output, use_n_blocks=n_blocks, use_avgpool=avgpool, use_cls=cls_token).shape[1]
+                        out_dim = create_linear_input(sample_output, use_n_blocks=n_blocks, use_avgpool=avgpool, use_cls=cls_token, backbone_type=backbone_type).shape[1]
 
                         classifier = LinearClassifier(
                             out_dim=out_dim,
                             use_n_blocks=n_blocks,
                             use_avgpool=avgpool,
                             num_classes=num_classes,
-                            use_cls=cls_token
+                            use_cls=cls_token,
+                            backbone_type=backbone_type
                         )
 
                         classifier_name = f"classifier_{n_blocks}_blocks_cls_{cls_token}_avgpool_{avgpool}_lr_{lr:.5f}_loss_{loss_type}".replace(".", "_")
@@ -151,41 +152,55 @@ class AllClassifiers(nn.Module):
         return len(self.classifiers_dict)
 
 
-def create_linear_input(x_tokens_list, use_n_blocks, use_avgpool, use_cls=False):
-    intermediate_output = x_tokens_list[-use_n_blocks:]
+def create_linear_input(x_tokens_list, use_n_blocks, use_avgpool, use_cls=False, backbone_type='vit'):
+    # Limit to available layers if requested più di quanto disponibile
+    use_n_blocks = min(use_n_blocks, len(x_tokens_list))
+    intermediate_output = x_tokens_list[-use_n_blocks:] if use_n_blocks > 0 else x_tokens_list[-1:] if x_tokens_list else []
+
     if use_cls:
-        # Use CLS token from intermediate layers (assuming first token is CLS)
-        output = torch.cat([layer[:, 0, :] for layer in intermediate_output], dim=-1)  # CLS tokens from layers
+        if backbone_type == 'vit':
+            # Use CLS token from intermediate layers (assuming first token is CLS)
+            output = torch.cat([layer[:, 0, :] for layer in intermediate_output], dim=-1)  # CLS tokens from layers
+        else:  # convnext
+            raise NotImplementedError("CLS token not supported for ConvNeXt")
     else:
-        output = torch.cat([torch.mean(layer, dim=1) for layer in intermediate_output], dim=-1)  # global mean of layers
-    if use_avgpool:
+        if backbone_type == 'vit':
+            output = torch.cat([torch.mean(layer, dim=1) for layer in intermediate_output], dim=-1)  # global mean over patches: [B, N, D] -> [B, D]
+        else:  # convnext
+            # Global spatial pooling over [B, C, H, W] -> [B, C]
+            output = torch.cat([torch.nn.functional.adaptive_avg_pool2d(layer, 1).view(layer.shape[0], -1) for layer in intermediate_output], dim=-1)
+
+    if use_avgpool and not use_cls and intermediate_output:
         last_layer = intermediate_output[-1]
-        if use_cls:
-            # Already using CLS, no need for avgpool
-            pass
-        else:
+        if backbone_type == 'vit':
             if last_layer.shape[1] > 1:  # if more than 1 token
                 avg_patch = torch.mean(last_layer, dim=1)  # (batch, dim)
                 output = torch.cat((output, avg_patch), dim=-1)
+        else:  # convnext
+            # Global spatial pooling on last layer
+            avg_patch = torch.nn.functional.adaptive_avg_pool2d(last_layer, 1).flatten()
+            output = torch.cat((output, avg_patch), dim=-1)
+
     return output.float()
 
 
 class LinearClassifier(nn.Module):
     """Linear layer to train on top of frozen features"""
 
-    def __init__(self, out_dim, use_n_blocks, use_avgpool, num_classes=1000, use_cls=False):
+    def __init__(self, out_dim, use_n_blocks, use_avgpool, num_classes=1000, use_cls=False, backbone_type='vit'):
         super().__init__()
         self.out_dim = out_dim
         self.use_n_blocks = use_n_blocks
         self.use_avgpool = use_avgpool
         self.use_cls = use_cls
         self.num_classes = num_classes
+        self.backbone_type = backbone_type
         self.linear = nn.Linear(out_dim, num_classes)
         self.linear.weight.data.normal_(mean=0.0, std=0.01)
         self.linear.bias.data.zero_()
 
     def forward(self, x_tokens_list):
-        output = create_linear_input(x_tokens_list, self.use_n_blocks, self.use_avgpool, self.use_cls)
+        output = create_linear_input(x_tokens_list, self.use_n_blocks, self.use_avgpool, self.use_cls, self.backbone_type)
         return self.linear(output)
 
 
@@ -251,9 +266,10 @@ class DINOSegmentator(nn.Module):
     def __init__(self, nc, config, image_size=(644,644), fine_tune=False, device="cpu"):
         super(DINOSegmentator, self).__init__()
 
-        # Load the DINOv2 backbone model based on the configuration
+        # Load the DINOv2/v3 backbone model based on the configuration
         self.backbone_model = self.load_backbone(dinov=config['version'],
-                                                 backbone_size=config['backbone_size'], 
+                                                 backbone_type=config.get('backbone_type', 'vit'),
+                                                 backbone_size=config['backbone_size'],
                                                  pretrained_weights=config['pretrained_weights'],
                                                  int_layers=config['intermediate_layers'],
                                                  device=device)
@@ -276,7 +292,7 @@ class DINOSegmentator(nn.Module):
             ('decode_head', self.decode_head)
         ]))
 
-    def load_backbone(self, dinov="v2", backbone_size="small", pretrained_weights=None, int_layers=[8, 9, 10, 11], device="cpu"):
+    def load_backbone(self, dinov="v2", backbone_type="vit", backbone_size="small", pretrained_weights=None, int_layers=[8, 9, 10, 11], device="cpu"):
         if dinov != "v2":
             backbone_archs = {
                 "small": "dinov3_vits16",
@@ -395,7 +411,8 @@ class DINOClassifier(nn.Module):
 
         # Load the DINO backbone model based on the configuration
         self.backbone_model = self.load_backbone(dinov=config['version'],
-                                                 backbone_size=config['backbone_size'], 
+                                                 backbone_type=config.get('backbone_type', 'vit'),
+                                                 backbone_size=config['backbone_size'],
                                                  pretrained_weights=config['pretrained_weights'],
                                                  int_layers=config['intermediate_layers'],
                                                  device=device)
@@ -409,14 +426,17 @@ class DINOClassifier(nn.Module):
         self.use_n_blocks = 1
         self.use_cls = config.get('use_cls_token', True)    # Usa CLS token per migliore rappresentazione globale
         self.use_avgpool = not self.use_cls                 # Opposto di self.use_cls
+        self.backbone_type = config.get('backbone_type', 'vit')  # Store backbone type
 
         # Create dummy input to calculate out_dim
         dummy_input = torch.randn(1, 3, image_size[0], image_size[1]).to(device)
         sample_output = self.backbone_model(dummy_input)
-        out_dim = create_linear_input(sample_output, self.use_n_blocks, self.use_avgpool, self.use_cls).shape[1]
+        if self.backbone_type == 'convnext':
+            sample_output = [sample_output]  # Wrap single tensor in list for create_linear_input
+        out_dim = create_linear_input(sample_output, self.use_n_blocks, self.use_avgpool, self.use_cls, self.backbone_type).shape[1]
 
         # Define the decode head for classification
-        self.decode_head = LinearClassifier(out_dim, self.use_n_blocks, self.use_avgpool, num_classes=nc, use_cls=self.use_cls)
+        self.decode_head = LinearClassifier(out_dim, self.use_n_blocks, self.use_avgpool, num_classes=nc, use_cls=self.use_cls, backbone_type=self.backbone_type)
         
         # Create the model as a sequential container
         self.model = nn.Sequential(OrderedDict([
@@ -424,28 +444,58 @@ class DINOClassifier(nn.Module):
             ('decode_head', self.decode_head)
         ]))
 
-    def load_backbone(self, dinov="v2", backbone_size="small", pretrained_weights=None, int_layers=[8, 9, 10, 11], device="cpu"):
+    def load_backbone(self, dinov="v2", backbone_type="vit", backbone_size="small", pretrained_weights=None, int_layers=[8, 9, 10, 11], device="cpu"):
         if dinov != "v2":
-            backbone_archs = {
-                "small": "dinov3_vits16",
-                "base": "dinov3_vitb16",
-                "large": "dinov3_vitl16",
-                "giant": "dinov3_vit7b16",
-            }
-            backbone_arch = backbone_archs[backbone_size]
-            
-            # Load the DINOv3 backbone model
             dinov3_repo_path = 'fetalus-fm/dinov3'
-            # Select pretrained weights based on backbone size
-            if backbone_size == "large":
-                dinov3_pretw = "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth"
-            elif backbone_size == "base":
-                dinov3_pretw = "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth"
-            elif backbone_size == "small":
-                dinov3_pretw = "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_weights/dinov3_vits16_pretrain_lvd1689m-08c60483.pth"
+
+            if backbone_type == 'convnext':
+                convnext_archs = {
+                    "tiny": "dinov3_convnext_tiny",
+                    "small": "dinov3_convnext_small",
+                    "base": "dinov3_convnext_base",
+                    "large": "dinov3_convnext_large"
+                }
+
+                # Select pretrained weights based on backbone size
+                if backbone_size == "large":
+                    dinov3_pretw = "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_weights/dinov3_convnext_large_pretrain_lvd1689m-61fa432d.pth"
+                elif backbone_size == "base":
+                    dinov3_pretw = "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_weights/dinov3_convnext_base_pretrain_lvd1689m-801f2ba9.pth"
+                elif backbone_size == "small":
+                    dinov3_pretw = "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_weights/dinov3_convnext_small_pretrain_lvd1689m-296db49d.pth"
+                elif backbone_size == "tiny":
+                    dinov3_pretw = "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_weights/dinov3_convnext_tiny_pretrain_lvd1689m-21b726bb.pth"
+                else:
+                    raise ValueError(f"Unsupported backbone_size {backbone_size} for ConvNeXt. Available: {list(convnext_archs.keys())}")
+
+                backbone_arch = convnext_archs[backbone_size]
+                # ConvNeXt models are loaded with default pretrained weights
+                backbone_model = torch.hub.load(dinov3_repo_path, backbone_arch, source='local', weights=dinov3_pretw)
+
+            elif backbone_type == 'vit':
+                vit_archs = {
+                    "small": "dinov3_vits16",
+                    "base": "dinov3_vitb16",
+                    "large": "dinov3_vitl16",
+                    "giant": "dinov3_vit7b16",
+                }
+                if backbone_size not in vit_archs:
+                    raise ValueError(f"Unsupported backbone_size {backbone_size} for ViT. Available: {list(vit_archs.keys())}")
+                backbone_arch = vit_archs[backbone_size]
+
+                # Select pretrained weights based on backbone size
+                if backbone_size == "large":
+                    dinov3_pretw = "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth"
+                elif backbone_size == "base":
+                    dinov3_pretw = "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth"
+                elif backbone_size == "small":
+                    dinov3_pretw = "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_weights/dinov3_vits16_pretrain_lvd1689m-08c60483.pth"
+                else:
+                    raise ValueError(f"Unsupported backbone size for DINOv3 ViT: {backbone_size}")
+                backbone_model = torch.hub.load(dinov3_repo_path, backbone_arch, source='local', weights=dinov3_pretw)
+
             else:
-                raise ValueError(f"Unsupported backbone size for DINOv3: {backbone_size}")
-            backbone_model = torch.hub.load(dinov3_repo_path, backbone_arch, source='local', weights=dinov3_pretw)
+                raise ValueError(f"Unsupported backbone_type {backbone_type}. Available: ['vit', 'convnext']")
 
             if pretrained_weights:
                 checkpoint = torch.load(pretrained_weights, weights_only=False, map_location=device)
@@ -465,7 +515,7 @@ class DINOClassifier(nn.Module):
                 missing_keys, unexpected_keys = backbone_model.load_state_dict(teacher_weights, strict=False)
                 print(f"[DEBUG] DINOv3 Missing keys: {missing_keys}")
                 print(f"[DEBUG] DINOv3 Unexpected keys: {unexpected_keys}")
-                print(f"Loaded DINOv3 {backbone_arch} backbone from local weights: {pretrained_weights}")
+                print(f"Loaded DINOv3 {backbone_arch} backbone from custom weights: {pretrained_weights}")
 
         else:
             backbone_archs = {
@@ -500,16 +550,25 @@ class DINOClassifier(nn.Module):
                 print(f"Loaded DINOv2 {backbone_arch} backbone from local weights: {pretrained_weights}")
 
         backbone_model = backbone_model.to(device)
-        backbone_model.forward = partial(
-            backbone_model.get_intermediate_layers,
-            n=int_layers,
-            reshape=False,
-        )
+
+        # For ConvNeXt, use standard forward (no intermediate layers)
+        if backbone_type == 'convnext':
+            # ConvNeXt uses standard forward, output is last feature map
+            pass  # No partial override
+        else:
+            # ViT uses intermediate layers
+            backbone_model.forward = partial(
+                backbone_model.get_intermediate_layers,
+                n=int_layers,
+                reshape=False,
+            )
 
         return backbone_model
 
     def forward(self, x):
         features = self.model.backbone(x)
+        if self.backbone_type == 'convnext':
+            features = [features]  # Wrap single tensor in list for LinearClassifier
 
         # Pass the features through the decode head
         classifier_out = self.decode_head(features)

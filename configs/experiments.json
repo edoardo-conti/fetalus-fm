@@ -2,7 +2,8 @@
     {
         "dino": {
             "version": "v3",
-            "backbone_size": "small",
+            "backbone_type": "convnext",
+            "backbone_size": "tiny",
             "pretrained_weights": false,
             "intermediate_layers": [7, 9, 10, 11]
         },
