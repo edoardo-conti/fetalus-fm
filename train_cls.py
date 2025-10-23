@@ -45,7 +45,7 @@ def plot_confusion_matrix(cm, classes, out_dir, title='Confusion Matrix'):
     plt.close()
 
 
-def create_prediction_grid(dataset, dataloader, backbone_model, classifier, classes, output_dir, device='cpu', max_samples=16):
+def create_prediction_grid(dataset, dataloader, backbone_model, classifier, classes, output_dir, device='cpu', max_samples=16, backbone_type='vit'):
     """
     Create a grid visualization of predictions showing input images with ground truth and predictions.
 
@@ -74,6 +74,11 @@ def create_prediction_grid(dataset, dataloader, backbone_model, classifier, clas
 
             # Get features and predictions
             features = backbone_model.backbone_model(batch_images)
+            if backbone_type == 'convnext':
+                if len(features.shape) == 4:
+                    features = [torch.mean(features, dim=[2, 3])]
+                else:
+                    features = [features]
             outputs = classifier(features)['temp']  # Get the single classifier output
 
             preds = torch.argmax(outputs, dim=1)
@@ -234,6 +239,9 @@ if __name__ == '__main__':
 
     # classes
     classes = FPDB_BRAIN_PLANES
+
+    # Get backbone type for feature processing
+    backbone_type = config['dino'].get('backbone_type', 'vit')
 
     # Load grid search configurations early (before using in panels)
     grid_config = config.get('grid_search', {})
@@ -457,6 +465,12 @@ if __name__ == '__main__':
             with torch.no_grad():
                 features = backbone_model.backbone_model(batch_data)
 
+            if backbone_type == 'convnext':
+                if len(features.shape) == 4:
+                    features = [torch.mean(features, dim=[2, 3])]
+                else:
+                    features = [features]
+
             # Forward pass through all classifiers and compute loss using their specific loss functions
             outputs = linear_classifiers(features)
             losses = {f"loss_{k}": loss_functions[k](v, batch_labels) for k, v in outputs.items()}
@@ -527,6 +541,11 @@ if __name__ == '__main__':
                 batch_labels = batch_labels.to(device)
 
                 features = backbone_model.backbone_model(batch_data)
+                if backbone_type == 'convnext':
+                    if len(features.shape) == 4:
+                        features = [torch.mean(features, dim=[2, 3])]
+                    else:
+                        features = [features]
                 outputs = linear_classifiers(features)
 
                 for classifier_name, classifier_output in outputs.items():
@@ -754,6 +773,11 @@ if __name__ == '__main__':
                 for data in test_loader:
                     pixel_values, labels = data[0].to(device), data[1].to(device)
                     features = backbone_model.backbone_model(pixel_values)
+                    if backbone_type == 'convnext':
+                        if len(features.shape) == 4:
+                            features = [torch.mean(features, dim=[2, 3])]
+                        else:
+                            features = [features]
                     outputs = best_classifier(features)['temp']  # Get the single classifier output
                     
                     # Compute loss using the specific loss function of the best classifier
@@ -778,7 +802,7 @@ if __name__ == '__main__':
             # Create and save sample prediction grid for manual inspection
             log.info("Creating sample prediction grid for visual inspection...")
             try:
-                create_prediction_grid(fus_test, test_loader, backbone_model, best_classifier, classes, best_classifier_dir, device=device, max_samples=config['batch_size'], image_size=config['image_size'], patch_size=14 if config['dino']['version'] == 'v2' else 16)
+                create_prediction_grid(fus_test, test_loader, backbone_model, best_classifier, classes, best_classifier_dir, device=device, max_samples=20, backbone_type=backbone_type)
                 log.info("Sample prediction grid saved successfully")
             except Exception as e:
                 log.warning(f"Could not create prediction grid: {e}")

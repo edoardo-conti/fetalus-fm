@@ -3,8 +3,9 @@
         "dino": {
             "version": "v3",
             "backbone_type": "convnext",
-            "backbone_size": "tiny",
+            "backbone_size": "small",
             "pretrained_weights": false,
+            "use_cls_token": false,
             "intermediate_layers": [7, 9, 10, 11]
         },
         "datasets": ["FPDB"],
