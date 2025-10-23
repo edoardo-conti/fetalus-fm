@@ -107,7 +107,9 @@ def create_multiple_classifiers(sample_output, n_last_blocks_list, learning_rate
                 for _lr in learning_rates:
                     lr = scale_lr(_lr, batch_size)
                     for loss_type in loss_types:
-                        out_dim = create_linear_input(sample_output, use_n_blocks=n_blocks, use_avgpool=avgpool, use_cls=cls_token, backbone_type=backbone_type).shape[1]
+                        output_tensor = create_linear_input(sample_output, use_n_blocks=n_blocks, use_avgpool=avgpool, use_cls=cls_token, backbone_type=backbone_type)
+                        shape = output_tensor.shape
+                        out_dim = shape[1] if len(shape) > 1 else shape[0]
 
                         classifier = LinearClassifier(
                             out_dim=out_dim,
@@ -166,20 +168,16 @@ def create_linear_input(x_tokens_list, use_n_blocks, use_avgpool, use_cls=False,
     else:
         if backbone_type == 'vit':
             output = torch.cat([torch.mean(layer, dim=1) for layer in intermediate_output], dim=-1)  # global mean over patches: [B, N, D] -> [B, D]
-        else:  # convnext
-            # Global spatial pooling over [B, C, H, W] -> [B, C]
-            output = torch.cat([torch.nn.functional.adaptive_avg_pool2d(layer, 1).view(layer.shape[0], -1) for layer in intermediate_output], dim=-1)
+        else:
+            output = torch.cat([layer for layer in intermediate_output], dim=-1)
 
-    if use_avgpool and not use_cls and intermediate_output:
+    if use_avgpool and not use_cls and len(intermediate_output) > 0:
         last_layer = intermediate_output[-1]
         if backbone_type == 'vit':
             if last_layer.shape[1] > 1:  # if more than 1 token
                 avg_patch = torch.mean(last_layer, dim=1)  # (batch, dim)
                 output = torch.cat((output, avg_patch), dim=-1)
-        else:  # convnext
-            # Global spatial pooling on last layer
-            avg_patch = torch.nn.functional.adaptive_avg_pool2d(last_layer, 1).flatten()
-            output = torch.cat((output, avg_patch), dim=-1)
+        # for convnext, output is already the global feature, no need to add extra global pooling
 
     return output.float()
 
@@ -201,6 +199,7 @@ class LinearClassifier(nn.Module):
 
     def forward(self, x_tokens_list):
         output = create_linear_input(x_tokens_list, self.use_n_blocks, self.use_avgpool, self.use_cls, self.backbone_type)
+        # print(f"Linear input shape: {output.shape}, linear in_features: {self.linear.in_features}")
         return self.linear(output)
 
 
@@ -431,9 +430,17 @@ class DINOClassifier(nn.Module):
         # Create dummy input to calculate out_dim
         dummy_input = torch.randn(1, 3, image_size[0], image_size[1]).to(device)
         sample_output = self.backbone_model(dummy_input)
+
         if self.backbone_type == 'convnext':
-            sample_output = [sample_output]  # Wrap single tensor in list for create_linear_input
+            # If backbone output is (B, C, H, W), apply global average pooling to get (B, C)
+            if len(sample_output.shape) == 4:
+                sample_output = [torch.mean(sample_output, dim=[2, 3])]
+            else:
+                # Already pooled to (B, C)
+                sample_output = [sample_output]
+
         out_dim = create_linear_input(sample_output, self.use_n_blocks, self.use_avgpool, self.use_cls, self.backbone_type).shape[1]
+        print(f"Calculated out_dim: {out_dim}")
 
         # Define the decode head for classification
         self.decode_head = LinearClassifier(out_dim, self.use_n_blocks, self.use_avgpool, num_classes=nc, use_cls=self.use_cls, backbone_type=self.backbone_type)
@@ -446,7 +453,7 @@ class DINOClassifier(nn.Module):
 
     def load_backbone(self, dinov="v2", backbone_type="vit", backbone_size="small", pretrained_weights=None, int_layers=[8, 9, 10, 11], device="cpu"):
         if dinov != "v2":
-            dinov3_repo_path = 'fetalus-fm/dinov3'
+            dinov3_repo_path = 'dinov3'
 
             if backbone_type == 'convnext':
                 convnext_archs = {
@@ -458,13 +465,13 @@ class DINOClassifier(nn.Module):
 
                 # Select pretrained weights based on backbone size
                 if backbone_size == "large":
-                    dinov3_pretw = "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_weights/dinov3_convnext_large_pretrain_lvd1689m-61fa432d.pth"
+                    dinov3_pretw = "/Users/edoardoconti/PhD/projects/fetalUS_FM/dinov3_weights/dinov3_convnext_large_pretrain_lvd1689m-61fa432d.pth"
                 elif backbone_size == "base":
-                    dinov3_pretw = "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_weights/dinov3_convnext_base_pretrain_lvd1689m-801f2ba9.pth"
+                    dinov3_pretw = "/Users/edoardoconti/PhD/projects/fetalUS_FM/dinov3_weights/dinov3_convnext_base_pretrain_lvd1689m-801f2ba9.pth"
                 elif backbone_size == "small":
-                    dinov3_pretw = "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_weights/dinov3_convnext_small_pretrain_lvd1689m-296db49d.pth"
+                    dinov3_pretw = "/Users/edoardoconti/PhD/projects/fetalUS_FM/dinov3_weights/dinov3_convnext_small_pretrain_lvd1689m-296db49d.pth"
                 elif backbone_size == "tiny":
-                    dinov3_pretw = "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_weights/dinov3_convnext_tiny_pretrain_lvd1689m-21b726bb.pth"
+                    dinov3_pretw = "/Users/edoardoconti/PhD/projects/fetalUS_FM/dinov3_weights/dinov3_convnext_tiny_pretrain_lvd1689m-21b726bb.pth"
                 else:
                     raise ValueError(f"Unsupported backbone_size {backbone_size} for ConvNeXt. Available: {list(convnext_archs.keys())}")
 
@@ -485,11 +492,11 @@ class DINOClassifier(nn.Module):
 
                 # Select pretrained weights based on backbone size
                 if backbone_size == "large":
-                    dinov3_pretw = "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth"
+                    dinov3_pretw = "/Users/edoardoconti/PhD/projects/fetalUS_FM/dinov3_weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth"
                 elif backbone_size == "base":
-                    dinov3_pretw = "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth"
+                    dinov3_pretw = "/Users/edoardoconti/PhD/projects/fetalUS_FM/dinov3_weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth"
                 elif backbone_size == "small":
-                    dinov3_pretw = "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_weights/dinov3_vits16_pretrain_lvd1689m-08c60483.pth"
+                    dinov3_pretw = "/Users/edoardoconti/PhD/projects/fetalUS_FM/dinov3_weights/dinov3_vits16_pretrain_lvd1689m-08c60483.pth"
                 else:
                     raise ValueError(f"Unsupported backbone size for DINOv3 ViT: {backbone_size}")
                 backbone_model = torch.hub.load(dinov3_repo_path, backbone_arch, source='local', weights=dinov3_pretw)
@@ -566,9 +573,16 @@ class DINOClassifier(nn.Module):
         return backbone_model
 
     def forward(self, x):
+        print(f"Input shape: {x.shape}")
         features = self.model.backbone(x)
+        print(f"Backbone output shape: {features.shape}")
         if self.backbone_type == 'convnext':
-            features = [features]  # Wrap single tensor in list for LinearClassifier
+            # If backbone output is (B, C, H, W), apply global average pooling to get (B, C)
+            if len(features.shape) == 4:
+                features = [torch.mean(features, dim=[2, 3])]
+            else:
+                # Already pooled to (B, C)
+                features = [features]
 
         # Pass the features through the decode head
         classifier_out = self.decode_head(features)
