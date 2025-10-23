@@ -723,6 +723,8 @@ if __name__ == '__main__':
             'test_loss': None,
             'test_acc': None,
             'test_f1_score': None,
+            'per_class_accuracy': None,
+            'per_class_f1': None,
             'best_classifier': best_classifier_name,
             'best_accuracy': best_accuracy
         }
@@ -775,7 +777,7 @@ if __name__ == '__main__':
             # Create and save sample prediction grid for manual inspection
             log.info("Creating sample prediction grid for visual inspection...")
             try:
-                create_prediction_grid(fus_test, test_loader, backbone_model, best_classifier, classes, best_classifier_dir, device=device, max_samples=20)
+                create_prediction_grid(fus_test, test_loader, backbone_model, best_classifier, classes, best_classifier_dir, device=device, max_samples=config['batch_size'], image_size=config['image_size'], patch_size=14 if config['dino']['version'] == 'v2' else 16)
                 log.info("Sample prediction grid saved successfully")
             except Exception as e:
                 log.warning(f"Could not create prediction grid: {e}")
@@ -793,6 +795,11 @@ if __name__ == '__main__':
             print("\nClassification Report:")
             print(class_report)
 
+            # Compute per-class metrics
+            class_report_dict = classification_report(all_labels, all_preds, target_names=classes, zero_division=0, output_dict=True)
+            per_class_accuracy = {classes[i]: class_report_dict[classes[i]]['recall'] for i in range(len(classes))}
+            per_class_f1 = {classes[i]: class_report_dict[classes[i]]['f1-score'] for i in range(len(classes))}
+
             # Save classification report to best classifier directory
             with open(os.path.join(best_classifier_dir, 'classification_report.txt'), 'w') as f:
                 f.write(f"Brain Planes Classification Report - {best_classifier_name}\n")
@@ -801,6 +808,8 @@ if __name__ == '__main__':
                 f.write(f"Validation Accuracy: {best_accuracy:.4f}\n")
                 f.write(f"Test Accuracy: {test_acc:.4f}\n")
                 f.write(f"Test F1 Score: {f1:.4f}\n\n")
+                f.write(f"Per-Class Accuracy: {per_class_accuracy}\n")
+                f.write(f"Per-Class F1: {per_class_f1}\n\n")
                 f.write(class_report)
 
             # Save final metrics
@@ -812,6 +821,8 @@ if __name__ == '__main__':
                 'test_loss': test_loss,
                 'test_acc': test_acc,
                 'test_f1_score': float(f1),
+                'per_class_accuracy': per_class_accuracy,
+                'per_class_f1': per_class_f1,
                 'best_classifier': best_classifier_name,
                 'best_val_accuracy': best_accuracy
             }
@@ -828,6 +839,8 @@ if __name__ == '__main__':
                 'test_loss': None,
                 'test_acc': None,
                 'test_f1_score': None,
+                'per_class_accuracy': None,
+                'per_class_f1': None,
                 'best_classifier': None,
                 'best_accuracy': None
             }
