@@ -179,7 +179,6 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--root", type=str, required=True, help="root of the project")
 parser.add_argument("--datasets", type=str, required=True, help="path to the datasets")
 parser.add_argument("--exp-id", type=int, help="index of experiment to run from config")
-parser.add_argument('--fine-tune', dest='fine_tune', action='store_true', help='whether to fine tune the backbone or not')
 parser.add_argument('--debug', action='store_true', help='debug mode, reduces dataset size for faster testing')
 args = parser.parse_args()
 # ==========================================================================================
@@ -273,17 +272,19 @@ if __name__ == '__main__':
             f"[bold yellow]Experiment directory[/bold yellow]: [white]{out_dir}[/white]",
             f"[bold yellow]Seed[/bold yellow]: [white]{SEED}[/white]\n",
             f"[bold yellow]DINO version[/bold yellow]: [white]{config['dino']['version']}[/white]",
-            f"[bold yellow]DINO backbone[/bold yellow]: [white]{config['dino']['backbone_size']}[/white]",
-            f"[bold yellow]DINO intermediate layers[/bold yellow]: [white]{config['dino']['intermediate_layers']}[/white]",
+            f"[bold yellow]DINO backbone type[/bold yellow]: [white]{config['dino']['backbone_type']}[/white]",
+            f"[bold yellow]DINO backbone size[/bold yellow]: [white]{config['dino']['backbone_size']}[/white]",
+            f"[bold yellow]DINO feature layers[/bold yellow]: [white]{config['dino']['intermediate_layers']}[/white]",
+            f"[bold yellow]DINO backbone fine-tuning [/bold yellow]: [white]{config['dino']['fine_tune']}[/white]",
             f"[bold yellow]Datasets[/bold yellow]: [white]{', '.join(config['datasets'])}[/white]",
             f"[bold yellow]Image Size[/bold yellow]: [white]{config['image_size']}[/white]",
             f"[bold yellow]Epochs[/bold yellow]: [white]{config['epochs']}[/white]",
             f"[bold yellow]Batch size[/bold yellow]: [white]{config['batch_size']}[/white]",
             f"[bold yellow]Weight decay[/bold yellow]: [white]{config['weight_decay']}[/white]",
-            f"[bold yellow]Early stopping patience[/bold yellow]: [white]{config.get('early_stop_patience', 10)}[/white]",
+            f"[bold yellow]Early stopping patience[/bold yellow]: [white]{config['early_stop_patience']}[/white]",
             f"[bold yellow]\n📊 GRID SEARCH CONFIGURATIONS 📊[/bold yellow]",
+            f"[bold yellow]N. blocks[/bold yellow]: [white]{n_blocks_list}[/white]",
             f"[bold yellow]Learning rates[/bold yellow]: [white]{learning_rates_list}[/white]",
-            f"[bold yellow]Architecture depths[/bold yellow]: [white]{n_blocks_list}[/white]",
             f"[bold yellow]Loss functions[/bold yellow]: [white]{loss_types_list}[/white]",
             f"[bold yellow]Schedulers[/bold yellow]: [white]{schedulers_list}[/white]",
             f"[bold yellow]Scheduler (current)[/bold yellow]: [white]{scheduler_type.upper()}[/white]",
@@ -357,7 +358,6 @@ if __name__ == '__main__':
     backbone_model = DINOClassifier(nc=num_classes,
                                    image_size=config['image_size'],
                                    config=config['dino'],
-                                   fine_tune=args.fine_tune,
                                    device=device)
     backbone_model.to(device)
 

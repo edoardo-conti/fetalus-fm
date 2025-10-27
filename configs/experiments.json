@@ -2,15 +2,16 @@
     {
         "dino": {
             "version": "v3",
-            "backbone_type": "convnext",
-            "backbone_size": "small",
-            "pretrained_weights": false,
+            "backbone_type": "vit",
+            "backbone_size": "base",
+            "pretrained_weights": "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_out/train_231025_235457_ViTB16_FAST/eval/training_12499/teacher_checkpoint.pth",
+            "fine_tune": true,
             "use_cls_token": false,
             "intermediate_layers": [7, 9, 10, 11]
         },
         "datasets": ["FPDB"],
         "image_size": [224, 224],
-        "epochs": 200,
+        "epochs": 150,
         "batch_size": 16,
         "weight_decay": 1e-2,
         "early_stop_patience": 20,

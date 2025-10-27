@@ -44,7 +44,6 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--root", type=str, required=True, help="root of the project")
 parser.add_argument("--datasets", type=str, required=True, help="path to the datasets")
 parser.add_argument("--exp-id", type=int, help="index of experiment to run from config")
-parser.add_argument('--fine-tune', dest='fine_tune', action='store_true', help='whether to fine tune the backbone or not')
 parser.add_argument('--debug', action='store_true', help='debug mode, reduces dataset size for faster testing')
 args = parser.parse_args()
 # ==========================================================================================
@@ -179,7 +178,6 @@ if __name__ == '__main__':
     model = DINOSegmentator(nc=num_classes, 
                                image_size=config['image_size'],
                                config=config['dino'], 
-                               fine_tune=args.fine_tune, 
                                device=device)
     model.to(device)
 

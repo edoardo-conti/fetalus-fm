@@ -104,18 +104,18 @@ def get_slurm_executor_parameters(
         # LeonardoB boost_usr_prod node specifications
         # 128 cores total, 4 GPUs per node -> ~32 CPUs per GPU for optimal data loading
         params = {
-            "mem_gb": 480,  # 480GB per node as per DINOv3_TRAINING.sh
+            # "mem_gb": 480,  # 480GB per node as per DINOv3_TRAINING.sh
             # "timeout_min": 60,  # 1 hour as per DINOv3_TRAINING.sh for robust resource usage
             # "gpus_per_node": num_gpus_per_node,
             # "tasks_per_node": 1, 
-            "cpus_per_task": 16, # 16 se ntask=1
+            "cpus_per_task": 32, # 16 se ntask=1
             "nodes": nodes,
             "slurm_account": get_slurm_account(cluster_type),
             "slurm_partition": get_slurm_partition(cluster_type),
             "slurm_additional_parameters": {
                 "time": "23:30:00",
                 "ntasks": 1, # num_gpus_per_node
-                "gres": f"gpu:a100:{num_gpus_per_node}"
+                "gres": f"gpu:a100:1" # f"gpu:a100:{num_gpus_per_node}
             },
             "slurm_setup": [
                 "module load profile/base",
@@ -125,6 +125,7 @@ def get_slurm_executor_parameters(
                 "source /leonardo_work/IscrC_FoSAM-X/fetalus-fm/.my_dinov3_env/bin/activate",
                 "cd /leonardo_work/IscrC_FoSAM-X/fetalus-fm",
                 "export PYTHONPATH=${PWD}:${PYTHONPATH}",
+                "export TORCH_NCCL_TIMEOUT=7200000",
                 'echo "===================================== System Info ====================================="',
                 'echo "Node list: $SLURM_NODELIST"',
                 'echo "CPUs per task: $SLURM_CPUS_PER_TASK"',
