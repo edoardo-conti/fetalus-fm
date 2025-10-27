@@ -355,10 +355,11 @@ if __name__ == '__main__':
     scheduler_type = schedulers_list[0] if schedulers_list else 'cosine'  # Use first scheduler as default
     
     # Initialize the single backbone model (backbone shared across all classifiers)
-    backbone_model = DINOClassifier(nc=num_classes,
-                                   image_size=config['image_size'],
-                                   config=config['dino'],
-                                   device=device)
+    backbone_model = DINOClassifier(root=args.root,
+                                    nc=num_classes,
+                                    image_size=config['image_size'],
+                                    config=config['dino'],
+                                    device=device)
     backbone_model.to(device)
 
     if args.debug:

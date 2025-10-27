@@ -8,7 +8,6 @@ from typing import Optional
 
 ssl._create_default_https_context = ssl._create_unverified_context
 
-
 class FocalLoss(nn.Module):
     """
     Reduces the loss contribution from easy examples and increases the importance of hard examples.
@@ -262,8 +261,11 @@ class DINOSegmentator(nn.Module):
     1. DINO backbone (with configurable size and feature extraction layers)
     2. Linear classifier head for segmentation
     """
-    def __init__(self, nc, config, image_size=(644,644), device="cpu"):
+    def __init__(self, root, nc, config, image_size=(644,644), device="cpu"):
         super(DINOSegmentator, self).__init__()
+
+        # Store root directory
+        self.root = root
 
         # Load the DINOv2/v3 backbone model based on the configuration
         self.backbone_model = self.load_backbone(dinov=config['version'],
@@ -279,7 +281,7 @@ class DINOSegmentator(nn.Module):
             param.requires_grad = fine_tune
         
         # Extract the number of channels from the backbone model and calculate token dimensions
-        patch_size = 14 if config['version'] == 'v2' else 16
+        patch_size = 14 if config['version'] == 2 else 16
         self.channels = model_dict['decode_head']['channels']
         self.tokenWH = image_size[0] // patch_size 
 
@@ -292,8 +294,8 @@ class DINOSegmentator(nn.Module):
             ('decode_head', self.decode_head)
         ]))
 
-    def load_backbone(self, dinov="v2", backbone_type="vit", backbone_size="small", pretrained_weights=None, int_layers=[8, 9, 10, 11], device="cpu"):
-        if dinov != "v2":
+    def load_backbone(self, dinov=3, backbone_type="vit", backbone_size="small", pretrained_weights=None, int_layers=[8, 9, 10, 11], device="cpu"):
+        if dinov == 3:
             backbone_archs = {
                 "small": "dinov3_vits16",
                 "base": "dinov3_vitb16",
@@ -301,9 +303,9 @@ class DINOSegmentator(nn.Module):
                 "giant": "dinov3_vit7b16",
             }
             backbone_arch = backbone_archs[backbone_size]
-
+            
             # Load the DINOv3 backbone model
-            fwork_path = '/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3/'
+            fwork_path = f"{self.root}/dinov3/"
             backbone_model = torch.hub.load(fwork_path, backbone_arch, source='local', pretrained=False)
 
             if pretrained_weights:
@@ -406,8 +408,11 @@ class DINOClassifier(nn.Module):
     1. DINO backbone (with configurable size and feature extraction layers)
     2. Linear classifier head for classification
     """
-    def __init__(self, nc, config, image_size=(644,644), device="cpu"):
+    def __init__(self, root, nc, config, image_size=(644,644), device="cpu"):
         super(DINOClassifier, self).__init__()
+        
+        # Store root directory
+        self.root = root
 
         # Load the DINO backbone model based on the configuration
         self.backbone_model = self.load_backbone(dinov=config['version'],
@@ -453,10 +458,10 @@ class DINOClassifier(nn.Module):
             ('decode_head', self.decode_head)
         ]))
 
-    def load_backbone(self, dinov="v2", backbone_type="vit", backbone_size="small", pretrained_weights=None, int_layers=[8, 9, 10, 11], device="cpu"):
-        if dinov != "v2":
-            dinov3_repo_path = '/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3'
-
+    def load_backbone(self, dinov=3, backbone_type="vit", backbone_size="small", pretrained_weights=None, int_layers=[8, 9, 10, 11], device="cpu"):
+        if dinov == 3:
+            dinov3_repo_path = f"{self.root}/dinov3"
+            
             if backbone_type == 'convnext':
                 convnext_archs = {
                     "tiny": "dinov3_convnext_tiny",
@@ -467,13 +472,13 @@ class DINOClassifier(nn.Module):
 
                 # Select pretrained weights based on backbone size
                 if backbone_size == "large":
-                    dinov3_pretw = "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_weights/dinov3_convnext_large_pretrain_lvd1689m-61fa432d.pth"
+                    dinov3_pretw = f"{self.root}/dinov3_weights/dinov3_convnext_large_pretrain_lvd1689m-61fa432d.pth"
                 elif backbone_size == "base":
-                    dinov3_pretw = "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_weights/dinov3_convnext_base_pretrain_lvd1689m-801f2ba9.pth"
+                    dinov3_pretw = f"{self.root}/dinov3_weights/dinov3_convnext_base_pretrain_lvd1689m-801f2ba9.pth"
                 elif backbone_size == "small":
-                    dinov3_pretw = "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_weights/dinov3_convnext_small_pretrain_lvd1689m-296db49d.pth"
+                    dinov3_pretw = f"{self.root}/dinov3_weights/dinov3_convnext_small_pretrain_lvd1689m-296db49d.pth"
                 elif backbone_size == "tiny":
-                    dinov3_pretw = "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_weights/dinov3_convnext_tiny_pretrain_lvd1689m-21b726bb.pth"
+                    dinov3_pretw = f"{self.root}/dinov3_weights/dinov3_convnext_tiny_pretrain_lvd1689m-21b726bb.pth"
                 else:
                     raise ValueError(f"Unsupported backbone_size {backbone_size} for ConvNeXt. Available: {list(convnext_archs.keys())}")
 
@@ -494,11 +499,11 @@ class DINOClassifier(nn.Module):
 
                 # Select pretrained weights based on backbone size
                 if backbone_size == "large":
-                    dinov3_pretw = "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth"
+                    dinov3_pretw = f"{self.root}/dinov3_weights/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth"
                 elif backbone_size == "base":
-                    dinov3_pretw = "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth"
+                    dinov3_pretw = f"{self.root}/dinov3_weights/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth"
                 elif backbone_size == "small":
-                    dinov3_pretw = "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_weights/dinov3_vits16_pretrain_lvd1689m-08c60483.pth"
+                    dinov3_pretw = f"{self.root}/dinov3_weights/dinov3_vits16_pretrain_lvd1689m-08c60483.pth"
                 else:
                     raise ValueError(f"Unsupported backbone size for DINOv3 ViT: {backbone_size}")
                 backbone_model = torch.hub.load(dinov3_repo_path, backbone_arch, source='local', weights=dinov3_pretw)

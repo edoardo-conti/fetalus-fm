@@ -1,7 +1,7 @@
 [
     {
         "dino": {
-            "version": "v3",
+            "version": 3,
             "backbone_type": "vit",
             "backbone_size": "base",
             "pretrained_weights": "/leonardo_work/IscrC_FoSAM-X/fetalus-fm/dinov3_out/train_231025_235457_ViTB16_FAST/eval/training_12499/teacher_checkpoint.pth",
