@@ -162,7 +162,7 @@ def get_val_augmentations(image_size):
     """
     return A.Compose([
         # Only center crop if needed for consistency
-        A.CenterCrop(width=image_size[0], height=image_size[1]),
+        # A.CenterCrop(width=image_size[0], height=image_size[1]),
     ])
 
 

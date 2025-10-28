@@ -413,13 +413,13 @@ class DINOClassifier(nn.Module):
         
         # Store root directory
         self.root = root
-
+        
         # Load the DINO backbone model based on the configuration
         self.backbone_model = self.load_backbone(dinov=config['version'],
-                                                 backbone_type=config.get('backbone_type', 'vit'),
+                                                 backbone_type=config['backbone_type'],
                                                  backbone_size=config['backbone_size'],
-                                                 pretrained_weights=config['pretrained_weights'],
                                                  int_layers=config['intermediate_layers'],
+                                                 pretrained_weights=config.get('pretrained_weights', None),
                                                  device=device)
         
         # Set the backbone model to training mode if fine-tuning is enabled

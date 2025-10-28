@@ -333,13 +333,14 @@ if __name__ == '__main__':
         style="bold cyan"
     ))
     # ==========================================================================================
-
+    
 
     # ==========================================================================================
     # ========================================= MODEL ==========================================
     # Set device based on availability
     device = torch.device(
-        "cuda" if torch.cuda.is_available() else
+        "cuda" if torch.cuda.is_available() else 
+        "mps" if torch.backends.mps.is_available() else
         "cpu"
     )
     log.info(f"Using device: {device}")
@@ -386,9 +387,8 @@ if __name__ == '__main__':
         backbone_type=config['dino'].get('backbone_type', 'vit')
     )
 
-    # Move classifiers to device if using CUDA
-    if torch.cuda.is_available():
-        linear_classifiers = linear_classifiers.cuda()
+    # Move classifiers to device
+    linear_classifiers.to(device)
 
     log.info(f"Created {len(linear_classifiers.classifiers_dict)} classifier configurations")
     for name in linear_classifiers.classifiers_dict.keys():
@@ -759,6 +759,7 @@ if __name__ == '__main__':
             backbone_model.load_state_dict(checkpoint['backbone_state_dict'])
             best_classifier = AllClassifiers({'temp': linear_classifiers.classifiers_dict[best_classifier_name]})
             best_classifier.classifiers_dict['temp'].load_state_dict(checkpoint['classifier_state_dict'])
+            best_classifier.to(device)
 
             backbone_model.eval()
             best_classifier.eval()
